@@ -58,6 +58,7 @@ simulation_app = app_launcher.app
 
 import numpy as np
 import torch
+from pynput import keyboard
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, AssetBaseCfg, RigidObject, RigidObjectCfg
@@ -69,6 +70,18 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from isaaclab_assets import FRANKA_PANDA_HIGH_PD_CFG  # isort: skip
+
+# Global flag for reset trigger
+reset_requested = False
+
+
+def on_press(key):
+    """Keyboard listener callback for reset trigger."""
+    global reset_requested
+    if key == keyboard.Key.enter:
+        reset_requested = True
+        print("[INFO] Reset requested by keyboard (Enter key)")
+
 
 # Workspace mapping constants
 HAPLY_Z_OFFSET = 0.35
@@ -180,6 +193,7 @@ def run_simulator(
     haply_device: HaplyDevice,
 ):
     """Runs the simulation loop with Haply teleoperation."""
+    global reset_requested
     sim_dt = sim.get_physics_dt()
     count = 1
 
@@ -190,6 +204,31 @@ def run_simulator(
 
     ee_body_name = "panda_hand"
     ee_body_idx = robot.body_names.index(ee_body_name)
+
+    def reset_scene():
+        """Reset robot, cube, table and all controllers."""
+        # Reset robot
+        root_state = robot.data.default_root_state.clone()
+        root_state[:, :3] += scene.env_origins
+        robot.write_root_pose_to_sim(root_state[:, :7])
+        robot.write_root_velocity_to_sim(root_state[:, 7:])
+
+        joint_pos = robot.data.default_joint_pos.clone()
+        joint_pos[0, :7] = torch.tensor([0.0, -0.569, 0.0, -2.81, 0.0, 3.037, 0.741], device=robot.device)
+        joint_vel = robot.data.default_joint_vel.clone()
+        robot.write_joint_state_to_sim(joint_pos, joint_vel)
+
+        # Reset cube
+        cube_state = cube.data.default_root_state.clone()
+        cube_state[:, :3] += scene.env_origins
+        cube.write_root_pose_to_sim(cube_state[:, :7])
+        cube.write_root_velocity_to_sim(cube_state[:, 7:])
+
+        # Reset scene, haply device and IK controller
+        scene.reset()
+        haply_device.reset()
+        ik_controller.reset()
+        print("[INFO] Scene reset complete (robot, cube, haply device, controllers)")
 
     joint_pos = robot.data.default_joint_pos.clone()
     joint_pos[0, :7] = torch.tensor([0.0, -0.569, 0.0, -2.81, 0.0, 3.037, 0.741], device=robot.device)
@@ -239,30 +278,15 @@ def run_simulator(
 
     print("\n[INFO] Teleoperation ready!")
     print("  Move handler: Control pose of the end-effector")
-    print("  Button A: Open | Button B: Close | Button C: Rotate EE (60°)\n")
+    print("  Button A: Open | Button B: Close | Button C: Rotate EE (60°)")
+    print("  Press ENTER: Reset scene (robot, cube, haply device)\n")
 
     while simulation_app.is_running():
-        if count % 10000 == 0:
-            count = 1
-            root_state = robot.data.default_root_state.clone()
-            root_state[:, :3] += scene.env_origins
-            robot.write_root_pose_to_sim(root_state[:, :7])
-            robot.write_root_velocity_to_sim(root_state[:, 7:])
-
-            joint_pos = robot.data.default_joint_pos.clone()
-            joint_pos[0, :7] = torch.tensor([0.0, -0.569, 0.0, -2.81, 0.0, 3.037, 0.741], device=robot.device)
-            joint_vel = robot.data.default_joint_vel.clone()
-            robot.write_joint_state_to_sim(joint_pos, joint_vel)
-
-            cube_state = cube.data.default_root_state.clone()
-            cube_state[:, :3] += scene.env_origins
-            cube.write_root_pose_to_sim(cube_state[:, :7])
-            cube.write_root_velocity_to_sim(cube_state[:, 7:])
-
-            scene.reset()
-            haply_device.reset()
-            ik_controller.reset()
-            print("[INFO]: Resetting robot state...")
+        # Check for manual reset (keyboard Enter key)
+        if reset_requested:
+            reset_scene()
+            reset_requested = False  # Clear the flag
+            continue
 
         # Get the data from Haply device
         haply_data = haply_device.advance()
@@ -321,7 +345,6 @@ def run_simulator(
             sim.step()
 
         scene.update(sim_dt)
-        count += 1
 
         # get contact forces and apply force feedback
         left_finger_forces = left_finger_sensor.data.net_forces_w[0, 0]
@@ -351,9 +374,17 @@ def main():
     haply_device = HaplyDevice(cfg=haply_cfg)
     print(f"[INFO] Haply connected: {args_cli.websocket_uri}")
 
+    # Start keyboard listener for reset functionality
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+    print("[INFO] Keyboard listener started (Press ENTER to reset)")
+
     sim.reset()
 
     run_simulator(sim, scene, haply_device)
+    
+    # Stop keyboard listener when simulation ends
+    listener.stop()
 
 
 if __name__ == "__main__":
