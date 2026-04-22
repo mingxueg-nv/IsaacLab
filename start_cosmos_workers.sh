@@ -27,7 +27,6 @@ set -eo pipefail
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-export HF_HOME=/localhome/local-mingxueg/pengfeig/IsaacLab/Isaac-GR00T/third_party/cosmos-transfer2.5/cache
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COSMOS_DIR="${SCRIPT_DIR}/Isaac-GR00T/third_party/cosmos-transfer2.5"
