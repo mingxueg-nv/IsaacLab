@@ -98,6 +98,19 @@ from rlinf.utils.placement import HybridComponentPlacement  # noqa: E402
 from rlinf.workers.env.env_worker import EnvWorker  # noqa: E402
 from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker  # noqa: E402
 
+
+class CosmosAwareRolloutWorker(MultiStepRolloutWorker):
+    """MultiStepRolloutWorker that exposes its Ray rank as COSMOS_WORKER_ID.
+
+    Each Ray actor process sets COSMOS_WORKER_ID = self._rank so that
+    VideoCosmosAugmentTransform._connect() routes to the correct Cosmos
+    service port (worker rank % len(ports)).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        os.environ["COSMOS_WORKER_ID"] = str(self._rank)
+
 logger = logging.getLogger(__name__)
 
 mp.set_start_method("spawn", force=True)
@@ -148,6 +161,21 @@ def main():
         if args_cli.resume_dir:
             cfg.runner.resume_dir = args_cli.resume_dir
 
+    # Propagate Cosmos config to Ray actor processes via environment variables.
+    # Ray actors inherit the parent process environment, so these are visible
+    # inside every MultiStepRolloutWorker before transforms are constructed.
+    if hasattr(cfg, "cosmos") and cfg.cosmos.get("enabled", False):
+        os.environ["COSMOS_ENABLED"] = "true"
+        os.environ["COSMOS_CACHE_DIR"] = str(cfg.cosmos.cache_dir)
+        os.environ["COSMOS_HOST"] = str(cfg.cosmos.host)
+        os.environ["COSMOS_PORTS"] = ",".join(str(p) for p in cfg.cosmos.ports)
+        os.environ["COSMOS_PROBABILITY"] = str(cfg.cosmos.probability)
+        os.environ["COSMOS_GRID_MODE"] = str(cfg.cosmos.get("grid_mode", False)).lower()
+        logger.info(
+            f"Cosmos augmentation enabled: host={cfg.cosmos.host} "
+            f"ports={list(cfg.cosmos.ports)} probability={cfg.cosmos.probability}"
+        )
+
     # Validate config
     cfg = validate_cfg(cfg)
 
@@ -182,9 +210,10 @@ def main():
         cluster, name=cfg.actor.group_name, placement_strategy=actor_placement
     )
 
-    # Create rollout worker
+    # Create rollout worker — use CosmosAwareRolloutWorker so each Ray actor
+    # sets COSMOS_WORKER_ID = self._rank for correct Cosmos port routing.
     rollout_placement = component_placement.get_strategy("rollout")
-    rollout_group = MultiStepRolloutWorker.create_group(cfg).launch(
+    rollout_group = CosmosAwareRolloutWorker.create_group(cfg).launch(
         cluster, name=cfg.rollout.group_name, placement_strategy=rollout_placement
     )
 
@@ -206,3 +235,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

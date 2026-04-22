@@ -18,11 +18,13 @@ Example usage in run.sh:
     export RLINF_DATA_CONFIG_CLASS="policy.gr00t_config:IsaacLabDataConfig"
 """
 
+import os
+
 from gr00t.data.dataset import ModalityConfig
 from gr00t.data.transform.base import ComposedModalityTransform
 from gr00t.data.transform.concat import ConcatTransform
 from gr00t.data.transform.state_action import StateActionSinCosTransform, StateActionToTensor, StateActionTransform
-from gr00t.data.transform.video import VideoColorJitter, VideoToNumpy, VideoToTensor, VideoCrop, VideoResize
+from gr00t.data.transform.video import VideoColorJitter, VideoCosmosAugmentTransform, VideoToNumpy, VideoToTensor, VideoCrop, VideoResize
 from gr00t.experiment.data_config import DATA_CONFIG_MAP, BaseDataConfig
 from gr00t.model.transforms import GR00TTransform
 
@@ -106,6 +108,26 @@ class IsaacLabDataConfig(BaseDataConfig):
             #     width=224,
             #     interpolation="linear",
             # ),
+        ]
+
+        # Optional Cosmos-Transfer2.5 augmentation.
+        # Enabled by setting COSMOS_ENABLED=true in the environment (done by train.py
+        # when cosmos.enabled=true in the YAML config).  Each RLinf rollout worker
+        # sets COSMOS_WORKER_ID=<rank> so it connects to its own Cosmos service port.
+        if os.environ.get("COSMOS_ENABLED", "").lower() == "true":
+            transforms.append(
+                VideoCosmosAugmentTransform(
+                    apply_to=self.video_keys,
+                    cache_dir=os.environ.get("COSMOS_CACHE_DIR", "/tmp/cosmos_cache"),
+                    host=os.environ.get("COSMOS_HOST", "localhost"),
+                    ports=[int(p) for p in os.environ.get("COSMOS_PORTS", "5557").split(",")],
+                    probability=float(os.environ.get("COSMOS_PROBABILITY", "0.5")),
+                    seed=None,
+                    grid_mode=os.environ.get("COSMOS_GRID_MODE", "false").lower() == "true",
+                )
+            )
+
+        transforms += [
             VideoColorJitter(
                 apply_to=self.video_keys,
                 brightness=0.3,
