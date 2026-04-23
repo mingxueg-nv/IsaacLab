@@ -314,7 +314,7 @@ critic:
 # Ports are assigned round-robin: rollout worker rank % len(ports).
 # Use one port per rollout GPU to avoid ZMQ contention.
 cosmos:
-  enabled: true
+  enabled: false
   cache_dir: "/tmp/cosmos_cache"
   host: "localhost"
   ports: [5557, 5558, 5559, 5560, 5561, 5562, 5563, 5564]
