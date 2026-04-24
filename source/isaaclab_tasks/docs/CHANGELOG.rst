@@ -1,6 +1,27 @@
 Changelog
 ---------
 
+1.5.14 (2026-04-23)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added a multi-modal variant of the ``assemble_trocar`` task that emits RGB, depth,
+  and non-colorized semantic segmentation (int32 class-id map) from all three cameras.
+  Registered as ``Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0``.
+* Added ``save_camera_observations.py`` under the ``assemble_trocar`` task to dump
+  RGB, Cosmos-style inverse-depth, and semantic segmentation images for visual
+  inspection. Depth PNGs are normalized per-frame to match Cosmos-Transfer2.5's
+  depth convention.
+* Added ``scripts/tools/fill_trocar_mask.py`` to bridge the transparent trocar shaft
+  in OmniGlass semantic/instance masks (disconnected tip+handle and shaft-base
+  components are rejoined by an inferred rectangle). The same helpers are reused
+  from ``save_camera_observations.py`` so live-saved masks get the same fix.
+* Extended ``CameraBaseCfg.get_camera_config`` with ``colorize_semantic_segmentation``,
+  ``colorize_instance_segmentation``, and ``semantic_filter`` pass-through arguments.
+
+
 1.5.13 (2026-03-18)
 ~~~~~~~~~~~~~~~~~~~
 

@@ -30,7 +30,11 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sim.spawners.from_files.from_files import _spawn_from_usd_file
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
+from isaaclab.sim.utils.prims import clone
+from isaaclab.sim.utils.semantics import add_labels
+from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils import configclass
 
 from isaaclab_tasks.manager_based.manipulation.assemble_trocar import mdp
@@ -440,3 +444,167 @@ class G1AssembleTrocarEvalEnvCfg(G1AssembleTrocarEnvCfg):
 
     # Override events to enforce deterministic per-env tray yaw on every reset.
     events: EventCfgFixTrayRotation = EventCfgFixTrayRotation()
+
+
+##
+# Multi-modal variant: RGB + depth + segmentation.
+#
+# This variant is intended for offline inspection, dataset generation, and sim-to-real
+# ablations — it is NOT consumed by the RLinf training pipeline, which still pulls only
+# RGB from the original `G1AssembleTrocarEnvCfg`.
+##
+
+MULTIMODAL_DATA_TYPES = (
+    "rgb",
+    "distance_to_image_plane",
+    "semantic_segmentation",
+)
+
+# Per-sub-prim semantic labels to apply inside the scene USD so each object
+# renders as its own class (not all as ``background``). Applied on the prototype
+# prim before ``@clone`` replicates it across envs, so every env carries the
+# same labels without a per-env traversal.
+SCENE_SUBPRIM_SEMANTIC_MAP: dict[str, str] = {
+    "Cart001": "cart",
+    "FlatGrid": "ground",
+    "InstrumentTrolley002": "instrument_trolley",
+}
+
+
+@clone
+def _spawn_scene_usd_with_subprim_labels(prim_path, cfg, translation=None, orientation=None, **kwargs):
+    """Custom USD spawner that also tags sub-prims inside the spawned USD.
+
+    Replaces ``spawn_from_usd`` as the scene's spawn function. Runs before sensor
+    annotators bind, so the added ``SemanticsLabelsAPI`` labels show up in
+    ``idToLabels`` for the semantic_segmentation annotator.
+    """
+    prim = _spawn_from_usd_file(prim_path, cfg.usd_path, cfg, translation, orientation)
+    stage = get_current_stage()
+    for child_name, class_label in SCENE_SUBPRIM_SEMANTIC_MAP.items():
+        child = stage.GetPrimAtPath(f"{prim_path}/{child_name}")
+        if child.IsValid():
+            add_labels(child, labels=[class_label], instance_name="class", overwrite=True)
+    return prim
+
+
+@configclass
+class AssembleTrocarSceneMultiModalCfg(AssembleTrocarSceneCfg):
+    """Scene cfg whose cameras emit RGB, depth, and segmentation.
+
+    Also tags the task-relevant props with semantic/instance labels so the
+    segmentation outputs are non-trivial (the default USD assets ship untagged).
+    """
+
+    front_camera = CameraPresets.g1_front_camera(
+        data_types=list(MULTIMODAL_DATA_TYPES),
+        colorize_semantic_segmentation=False,
+    )
+    left_wrist_camera = CameraPresets.left_dex3_wrist_camera(
+        data_types=list(MULTIMODAL_DATA_TYPES),
+        colorize_semantic_segmentation=False,
+    )
+    right_wrist_camera = CameraPresets.right_dex3_wrist_camera(
+        data_types=list(MULTIMODAL_DATA_TYPES),
+        colorize_semantic_segmentation=False,
+    )
+
+    def __post_init__(self):
+        parent_post_init = getattr(super(), "__post_init__", None)
+        if callable(parent_post_init):
+            parent_post_init()
+        # Attach semantic tags to task-relevant props and the robot.
+        self.trocar_1.spawn.semantic_tags = [("class", "trocar")]
+        self.trocar_2.spawn.semantic_tags = [("class", "trocar_device")]
+        self.tray.spawn.semantic_tags = [("class", "tray")]
+        if getattr(self.robot.spawn, "semantic_tags", None) is None:
+            self.robot.spawn.semantic_tags = [("class", "robot")]
+        # The scene USD packs multiple objects (cart, floor, trolley). We swap its
+        # spawner for one that also applies per-sub-prim SemanticsLabelsAPI labels
+        # on the prototype prim, so each object shows up as its own class rather
+        # than inheriting a single "background" tag.
+        self.scene.spawn.func = _spawn_scene_usd_with_subprim_labels
+
+
+@configclass
+class ObservationsMultiModalCfg(ObservationsCfg):
+    """Observation groups augmented with depth and segmentation per camera."""
+
+    @configclass
+    class CameraDepthCfg(ObsGroup):
+        """Per-camera depth (distance to image plane) [m]."""
+
+        front_camera = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("front_camera"),
+                "data_type": "distance_to_image_plane",
+                "normalize": True,
+            },
+        )
+        left_wrist_camera = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("left_wrist_camera"),
+                "data_type": "distance_to_image_plane",
+                "normalize": True,
+            },
+        )
+        right_wrist_camera = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("right_wrist_camera"),
+                "data_type": "distance_to_image_plane",
+                "normalize": True,
+            },
+        )
+
+        def __post_init__(self):
+            self.concatenate_terms = False
+
+    @configclass
+    class CameraSemanticSegmentationCfg(ObsGroup):
+        """Per-camera semantic segmentation (RGBA uint8 when colorized)."""
+
+        front_camera = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("front_camera"),
+                "data_type": "semantic_segmentation",
+                "normalize": False,
+            },
+        )
+        left_wrist_camera = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("left_wrist_camera"),
+                "data_type": "semantic_segmentation",
+                "normalize": False,
+            },
+        )
+        right_wrist_camera = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("right_wrist_camera"),
+                "data_type": "semantic_segmentation",
+                "normalize": False,
+            },
+        )
+
+        def __post_init__(self):
+            self.concatenate_terms = False
+
+    camera_depth: CameraDepthCfg = CameraDepthCfg()
+    camera_semantic_segmentation: CameraSemanticSegmentationCfg = CameraSemanticSegmentationCfg()
+
+
+@configclass
+class G1AssembleTrocarMultiModalEnvCfg(G1AssembleTrocarEnvCfg):
+    """Env cfg that exposes RGB, depth, and segmentation from all three cameras."""
+
+    scene: AssembleTrocarSceneMultiModalCfg = AssembleTrocarSceneMultiModalCfg(
+        num_envs=1,
+        env_spacing=6.0,
+        replicate_physics=True,
+    )
+    observations: ObservationsMultiModalCfg = ObservationsMultiModalCfg()

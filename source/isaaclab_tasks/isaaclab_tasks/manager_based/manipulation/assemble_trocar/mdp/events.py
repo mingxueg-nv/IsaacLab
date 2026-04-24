@@ -38,7 +38,68 @@ __all__ = [
     "reset_tray_with_random_rotation",
     "reset_robot_to_default_joint_positions",
     "reset_task_stage",
+    "tag_scene_subprims_semantics",
 ]
+
+
+def tag_scene_subprims_semantics(
+    env: "ManagerBasedRLEnv",
+    env_ids: torch.Tensor | None,
+    mapping: dict[str, str] | None = None,
+    scene_prim: str = "Scene",
+) -> None:
+    """Apply per-object semantic labels to sub-prims inside a scene USD.
+
+    ``UsdFileCfg.semantic_tags`` only labels the top-level spawned xform, so every
+    child mesh inherits the same class via USD composition. When multiple distinct
+    objects live inside the same scene USD (e.g. ``Cart001``, ``FlatGrid``,
+    ``InstrumentTrolley002``), we override the inherited tag on each one by
+    applying :class:`UsdSemantics.LabelsAPI` directly to the sub-prim.
+
+    This is registered as a ``mode="startup"`` event so it runs once after sim
+    start, for every parallel env.
+
+    Args:
+        env: The RL env.
+        env_ids: Unused (startup events receive ``None``; we tag all envs).
+        mapping: ``{scene_child_name: class_label}``. For each env's
+            ``/World/envs/env_N/<scene_prim>/<child_name>``, sets the semantic
+            ``class`` label to ``class_label``. Defaults to the assemble_trocar
+            scene layout.
+        scene_prim: Name of the scene xform under each env root.
+    """
+    del env_ids  # unused for startup
+
+    from isaaclab.sim.utils.semantics import add_labels
+    from isaaclab.sim.utils.stage import get_current_stage
+
+    if mapping is None:
+        mapping = {
+            "Cart001": "cart",
+            "FlatGrid": "ground",
+            "InstrumentTrolley002": "instrument_trolley",
+        }
+
+    stage = get_current_stage()
+    env_origins_count = env.scene.num_envs
+    applied = 0
+    missing: list[str] = []
+    for env_idx in range(env_origins_count):
+        scene_root = f"/World/envs/env_{env_idx}/{scene_prim}"
+        for child_name, class_label in mapping.items():
+            prim_path = f"{scene_root}/{child_name}"
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                if env_idx == 0:
+                    missing.append(prim_path)
+                continue
+            add_labels(prim, labels=[class_label], instance_name="class")
+            applied += 1
+    print(
+        f"[tag_scene_subprims_semantics] applied={applied}  missing_on_env0={missing}  "
+        f"mapping={mapping}",
+        flush=True,
+    )
 
 
 def reset_task_stage(

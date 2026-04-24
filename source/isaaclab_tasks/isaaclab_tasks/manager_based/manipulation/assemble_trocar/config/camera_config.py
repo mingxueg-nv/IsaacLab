@@ -51,6 +51,9 @@ class CameraBaseCfg:
         pos_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
         rot_offset: tuple[float, float, float, float] = (0.5, -0.5, 0.5, -0.5),
         data_types: Sequence[str] | None = None,
+        colorize_semantic_segmentation: bool = True,
+        colorize_instance_segmentation: bool = True,
+        semantic_filter: str | list[str] = "*:*",
     ) -> CameraCfg:
         """Get a pinhole camera configuration.
 
@@ -65,7 +68,14 @@ class CameraBaseCfg:
             clipping_range: clipping range (near clipping plane, far clipping plane)
             pos_offset: position offset (x, y, z)
             rot_offset: rotation offset quaternion
-            data_types: data type list
+            data_types: data type list. Valid entries include ``"rgb"``,
+                ``"distance_to_image_plane"``, ``"depth"``, ``"semantic_segmentation"``,
+                and ``"instance_segmentation_fast"``.
+            colorize_semantic_segmentation: If True, semantic segmentation is returned
+                as an RGBA uint8 image; if False, as an int32 class ID map.
+            colorize_instance_segmentation: If True, instance segmentation is returned
+                as an RGBA uint8 image; if False, as an int32 instance ID map.
+            semantic_filter: Semantic filter predicate for semantic segmentation.
 
         Returns:
             CameraCfg: camera configuration
@@ -79,6 +89,9 @@ class CameraBaseCfg:
             height=height,
             width=width,
             data_types=list(data_types),
+            colorize_semantic_segmentation=colorize_semantic_segmentation,
+            colorize_instance_segmentation=colorize_instance_segmentation,
+            semantic_filter=semantic_filter,
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=focal_length,
                 focus_distance=focus_distance,

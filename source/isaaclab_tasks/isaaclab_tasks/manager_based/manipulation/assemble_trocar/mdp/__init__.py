@@ -22,7 +22,12 @@
 
 from isaaclab.envs.mdp import JointPositionActionCfg, time_out
 
-from .events import reset_robot_to_default_joint_positions, reset_task_stage, reset_tray_with_random_rotation
+from .events import (
+    reset_robot_to_default_joint_positions,
+    reset_task_stage,
+    reset_tray_with_random_rotation,
+    tag_scene_subprims_semantics,
+)
 from .observations import get_robot_body_joint_states, get_robot_dex3_joint_states
 from .rewards import (
     lift_trocars_reward,
@@ -48,4 +53,5 @@ __all__ = [
     "trocar_placement_reward",
     "task_success_termination",
     "object_drop_termination",
+    "tag_scene_subprims_semantics",
 ]
