@@ -75,34 +75,23 @@ import torch  # noqa: E402
 import isaaclab_tasks  # noqa: F401, E402
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 
-# Reuse the OmniGlass shaft-fill helpers from scripts/tools/fill_trocar_mask.py so the
-# live-saved masks get the same post-processing as exported datasets.
-_REPO_ROOT = Path(__file__).resolve().parents[6]
-_TOOLS_DIR = _REPO_ROOT / "scripts" / "tools"
-if str(_TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_DIR))
+# Reuse helpers shared with test_cosmos_augment.py.
+_TASK_DIR = Path(__file__).resolve().parent
+if str(_TASK_DIR) not in sys.path:
+    sys.path.insert(0, str(_TASK_DIR))
+from _obs_helpers import (  # noqa: E402
+    CLASS_COLORS,
+    UNKNOWN_CLASS_COLOR,
+    build_id_color_lut as _build_id_color_lut,
+    compute_hold_action as _compute_hold_action,
+    iter_camera_obs as _iter_camera_obs,
+    resolve_fill_label_ids as _resolve_fill_label_ids,
+    to_numpy as _to_numpy,
+    _ensure_tools_on_path,
+)
+
+_ensure_tools_on_path()
 from fill_trocar_mask import _fill_frame  # noqa: E402
-
-# View-consistent class-name → RGB palette. Every camera has its own integer
-# label allocation (``idToLabels`` table is per-render-product), so we colorize
-# through the class name rather than the raw ID to keep colors stable across
-# the front and wrist views.
-CLASS_COLORS: dict[str, tuple[int, int, int]] = {
-    "BACKGROUND": (0, 0, 0),          # annotator miss / sky dome — black
-    "UNLABELLED": (120, 120, 120),    # Kit default — gray
-    "robot":              (0, 200, 0),      # green
-    "trocar":             (255, 0, 255),    # magenta
-    "trocar_device":      (255, 80, 80),    # red/pink
-    "tray":               (80, 80, 255),    # blue
-    "cart":               (255, 255, 0),    # yellow
-    "ground":             (0, 255, 255),    # cyan
-    "instrument_trolley": (255, 140, 0),    # orange
-}
-UNKNOWN_CLASS_COLOR: tuple[int, int, int] = (200, 200, 200)
-
-
-def _to_numpy(t: torch.Tensor) -> np.ndarray:
-    return t.detach().cpu().contiguous().numpy()
 
 
 def _save_rgb(image: np.ndarray, path: Path) -> None:
@@ -153,43 +142,6 @@ def _save_depth(depth: np.ndarray, path: Path) -> None:
     Image.fromarray(png, mode="L").save(path)
 
 
-def _build_id_color_lut(env, camera_name: str) -> np.ndarray:
-    """Return an ``(N, 3)`` uint8 LUT mapping integer label IDs to stable RGB colors.
-
-    Colors are looked up by class *name* in :data:`CLASS_COLORS` so the same class
-    renders with the same color in every camera view, even though each camera
-    allocates its own numeric IDs.
-    """
-    sensor = env.unwrapped.scene.sensors[camera_name]
-    info = getattr(sensor.data, "info", {}) or {}
-    meta = info.get("semantic_segmentation") or {}
-    id_to_labels = meta.get("idToLabels") or {}
-
-    max_id = 0
-    parsed: dict[int, list[str]] = {}
-    for key, label in id_to_labels.items():
-        try:
-            idx = int(key)
-        except (TypeError, ValueError):
-            continue
-        max_id = max(max_id, idx)
-        if isinstance(label, dict):
-            names = [str(v) for v in label.values()]
-        else:
-            names = [str(label)]
-        parsed[idx] = names
-
-    lut = np.full((max_id + 1, 3), UNKNOWN_CLASS_COLOR, dtype=np.uint8)
-    for idx, names in parsed.items():
-        color = UNKNOWN_CLASS_COLOR
-        for n in names:
-            if n in CLASS_COLORS:
-                color = CLASS_COLORS[n]
-                break
-        lut[idx] = color
-    return lut
-
-
 def _save_segmentation(
     seg: np.ndarray,
     path: Path,
@@ -238,77 +190,6 @@ def _save_segmentation(
         in_range = (arr >= 0) & (arr < id_color_lut.shape[0])
         rgb[in_range] = id_color_lut[arr[in_range]]
     Image.fromarray(rgb, mode="RGB").save(path)
-
-
-def _resolve_fill_label_ids(env, camera_names: list[str], class_names: list[str]) -> dict[str, list[int]]:
-    """Look up the integer label IDs corresponding to ``class_names`` for each camera.
-
-    Returns a ``{camera_name: [label_id, ...]}`` mapping. Each camera has its own
-    ``idToLabels`` dict and the IDs are not guaranteed to match across cameras.
-    """
-    if not class_names:
-        return {cam: [] for cam in camera_names}
-    wanted = {c.lower() for c in class_names}
-    out: dict[str, list[int]] = {}
-    for cam in camera_names:
-        sensor = env.unwrapped.scene.sensors[cam]
-        info = getattr(sensor.data, "info", {}) or {}
-        meta = info.get("semantic_segmentation") or {}
-        id_to_labels = meta.get("idToLabels") or {}
-        ids: list[int] = []
-        for key, label in id_to_labels.items():
-            # ``label`` is either a dict like ``{"class": "trocar"}`` or a string.
-            if isinstance(label, dict):
-                values = {str(v).lower() for v in label.values()}
-            else:
-                values = {str(label).lower()}
-            if values & wanted:
-                try:
-                    ids.append(int(key))
-                except (TypeError, ValueError):
-                    continue
-        out[cam] = sorted(set(ids))
-    return out
-
-
-def _iter_camera_obs(obs_group: dict[str, torch.Tensor]):
-    """Yield (camera_name, tensor) for each camera key in a camera obs group."""
-    for key, value in obs_group.items():
-        if isinstance(value, torch.Tensor):
-            yield key, value
-
-
-def _compute_hold_action(env) -> torch.Tensor:
-    """Build an action tensor that commands the robot to hold its current pose.
-
-    The joint_pos action term applies ``targets = scale * action + offset``, so to
-    hold pose we set ``action = (current_joint_pos - offset) / scale``.
-    """
-    import warp as wp
-
-    action_term = env.unwrapped.action_manager.get_term("joint_pos")
-    robot = env.unwrapped.scene["robot"]
-    joint_pos = robot.data.joint_pos
-    if not isinstance(joint_pos, torch.Tensor):
-        joint_pos = wp.to_torch(joint_pos)
-
-    # The action term stores the joint indices it drives, in action order.
-    joint_ids = action_term._joint_ids
-    if isinstance(joint_ids, slice):
-        selected = joint_pos[:, joint_ids]
-    else:
-        ids_tensor = torch.as_tensor(list(joint_ids), dtype=torch.long, device=joint_pos.device)
-        selected = joint_pos.index_select(dim=1, index=ids_tensor)
-
-    # Subtract offset and divide by scale to recover pre-action values.
-    offset = action_term._offset
-    scale = action_term._scale
-    if isinstance(offset, torch.Tensor):
-        offset = offset.to(selected.device)
-    if isinstance(scale, torch.Tensor):
-        scale = scale.to(selected.device)
-    action = (selected - offset) / scale
-    return action.contiguous()
 
 
 def main() -> None:

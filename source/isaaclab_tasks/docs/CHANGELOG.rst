@@ -1,6 +1,126 @@
 Changelog
 ---------
 
+1.5.23 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``--z_image_view_size`` to ``test_z-image_augment.py`` so RGB,
+  control, and inpaint-mask views can be resized before being sent to Z-Image.
+
+
+1.5.22 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``--inpaint_preserve_dilation_px`` to ``test_z-image_augment.py`` so
+  Z-Image background inpainting can preserve a wider band around foreground
+  semantic classes and reduce hallucinated foreground attachments.
+
+
+1.5.21 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``--control_kind none`` to ``test_z-image_augment.py`` so Z-Image
+  inpainting can run without edge, depth, or segmentation control images.
+
+
+1.5.20 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``--inpaint_background`` to ``test_z-image_augment.py`` so Z-Image can
+  regenerate background pixels while preserving configurable semantic classes
+  such as ``robot``, ``trocar``, ``trocar_device``, ``tray``, and ``cart``.
+
+
+1.5.19 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Changed
+^^^^^^^
+
+* Changed ``test_z-image_augment.py`` depth control preprocessing to use
+  VideoX-Fun's ZoeDepth-style percentile normalization instead of
+  Cosmos-style reciprocal inverse-depth normalization.
+
+
+1.5.18 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added depth and semantic-segmentation control modes to
+  ``test_z-image_augment.py`` so the ``assemble_trocar`` Z-Image visual
+  inspection script can send sim control images to ``z_image_service.py``.
+
+
+1.5.17 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``test_z-image_augment.py`` under the ``assemble_trocar`` task to send
+  sim RGB frames to a running Z-Image-Fun ZMQ service and dump
+  ``input_rgb / z_image_out`` image pairs per camera per frame for visual
+  inspection. Includes a ``--grid_mode`` flag that tiles the three cameras
+  into a single 2x2 grid before the Z-Image call, mirroring
+  ``VideoZImageAugmentTransform(grid_mode=True)`` during RLinf training.
+
+
+1.5.16 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added guided-generation mask support to ``test_cosmos_augment.py`` so the
+  ``assemble_trocar`` Cosmos visual inspection script can send a binary
+  semantic foreground mask, derived from configurable class names, alongside
+  RGB and optional depth or segmentation control.
+
+
+1.5.15 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``test_cosmos_augment.py`` under the ``assemble_trocar`` task to send
+  sim RGB plus a user-chosen control modality (``depth`` or ``seg``) to a
+  running Cosmos-Transfer2.5 ZMQ service and dump the ``input_rgb / control /
+  cosmos_out`` triple per camera per frame for visual inspection. Includes a
+  ``--grid_mode`` flag that tiles the three cameras into a single 2x2 grid
+  before the Cosmos call (with the bottom-right slot zero-padded), mirroring
+  ``VideoCosmosAugmentTransform(grid_mode=True)`` so the test produces the
+  same input as the RLinf training path.
+* Factored shared sim-side helpers (class-color palette, LUT builder, hold-action,
+  depth-to-inverse-RGB, seg-to-class-RGB, ``idToLabels`` resolver) out of
+  ``save_camera_observations.py`` into ``_obs_helpers.py`` so the Cosmos test
+  script produces exactly the same control signals as the inspection script.
+
+Changed
+^^^^^^^
+
+* ``cosmos_service.py`` now accepts an optional control block appended to the
+  ZMQ request (``RGB block + 16-byte ctrl header + float32 ctrl payload``).
+  When present, the control video is written to a temp mp4 and passed to
+  ``generate_img2world`` via ``input_control_video_paths[control_type]``
+  instead of letting Cosmos auto-estimate. Back-compat: clients that send only
+  the RGB block (original protocol) keep the previous auto-estimate behavior.
+
+
 1.5.14 (2026-04-23)
 ~~~~~~~~~~~~~~~~~~~
 
