@@ -50,7 +50,18 @@ parser.add_argument(
 parser.add_argument(
     "--num_episodes", type=int, default=None, help="Number of evaluation episodes (overrides config if set)."
 )
-parser.add_argument("--video", action="store_true", default=False, help="Enable video recording.")
+parser.add_argument(
+    "--video",
+    action="store_true",
+    default=True,
+    help="Enable video recording (default: True; videos are saved automatically alongside masks).",
+)
+parser.add_argument(
+    "--no-video",
+    dest="video",
+    action="store_false",
+    help="Disable automatic video/mask recording.",
+)
 cli_args.add_rlinf_args(parser)
 args_cli = parser.parse_args()
 
@@ -116,10 +127,14 @@ def main():
         if args_cli.model_path:
             cfg.rollout.model.model_path = args_cli.model_path
 
-        # Enable video saving if requested
+        # Enable video saving by default (RGB + colorized instance-segmentation
+        # masks are tiled into a single MP4 per episode by RecordVideo; mask
+        # tiles come from the *_camera_mask ObsTerms wired up in the env cfg).
         if args_cli.video:
             cfg.env.eval.video_cfg.save_video = True
             cfg.env.eval.video_cfg.video_base_dir = str(log_dir / "videos")
+        else:
+            cfg.env.eval.video_cfg.save_video = False
 
         # Override task if provided via CLI
         if args_cli.task:

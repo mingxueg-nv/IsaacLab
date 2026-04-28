@@ -117,7 +117,8 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
     trocar_1 = RigidObjectCfg(
         prim_path="/World/envs/env_.*/trocar_1",
         spawn=UsdFileCfg(
-            usd_path=f"{USD_ROOT}/Assets/Trocar002/Trocar002-xform-wo.usd",
+            usd_path="/localhome/local-mingxueg/mingxueg/surgery-room-dev-internal/assets/Assets/Assets/Trocar002/Trocar004_test.usd",
+            semantic_tags=[("class", "trocar"), ("instance", "trocar_1")],
             collision_props=sim_utils.CollisionPropertiesCfg(
                 collision_enabled=True,
                 contact_offset=0.001,
@@ -133,11 +134,8 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
     trocar_2 = RigidObjectCfg(
         prim_path="/World/envs/env_.*/trocar_2",
         spawn=UsdFileCfg(
-            usd_path=(
-                f"{USD_ROOT}/Assets/"
-                "DisposableLaparoscopicPunctureDevice001/"
-                "DisposableLaparoscopicPunctureDevice005-xform.usd"
-            ),
+            usd_path="/localhome/local-mingxueg/mingxueg/surgery-room-dev-internal/assets/Assets/Assets/DisposableLaparoscopicPunctureDevice001/DisposableLaparoscopicPunctureDevice006_test.usd",
+            semantic_tags=[("class", "trocar"), ("instance", "trocar_2")],
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 disable_gravity=False,
@@ -151,6 +149,7 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
         prim_path="/World/envs/env_.*/surgical_tray",
         spawn=UsdFileCfg(
             usd_path=f"{USD_ROOT}/Assets/SurgicalTray001/SurgicalTray001.usd",
+            semantic_tags=[("class", "tray")],
         ),
         init_state=ArticulationCfg.InitialStateCfg(pos=[-1.54919, 2.03365, 0.84554], rot=[0.0, 0.0, -0.70711, 0.70711]),
         actuators={},  # Empty dict for passive articulation (no motors)
@@ -208,7 +207,13 @@ class ObservationsCfg:
 
     @configclass
     class CameraImagesCfg(ObsGroup):
-        """Observations from the robot's cameras."""
+        """Observations from the robot's cameras.
+
+        RGB terms feed GR00T (and the existing video stream).  The ``*_mask`` terms
+        expose the colorized instance-segmentation output (uint8 RGBA at the
+        camera's native resolution) for video logging only — they are intentionally
+        not consumed by the GR00T obs converter.
+        """
 
         front_camera = ObsTerm(
             func=base_mdp.image,
@@ -221,6 +226,30 @@ class ObservationsCfg:
         right_wrist_camera = ObsTerm(
             func=base_mdp.image,
             params={"sensor_cfg": SceneEntityCfg("right_wrist_camera"), "data_type": "rgb", "normalize": False},
+        )
+        front_camera_mask = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("front_camera"),
+                "data_type": "instance_segmentation_fast",
+                "normalize": False,
+            },
+        )
+        left_wrist_camera_mask = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("left_wrist_camera"),
+                "data_type": "instance_segmentation_fast",
+                "normalize": False,
+            },
+        )
+        right_wrist_camera_mask = ObsTerm(
+            func=base_mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("right_wrist_camera"),
+                "data_type": "instance_segmentation_fast",
+                "normalize": False,
+            },
         )
 
         def __post_init__(self):
@@ -245,7 +274,7 @@ class TerminationsCfg:
         time_out=False,  # This is a success termination, not a failure
         params={
             "print_log": False,
-            "success_stage": 1,
+            "success_stage": 4,
         },
     )
     object_drop = DoneTerm(
@@ -400,6 +429,14 @@ class G1AssembleTrocarEnvCfg(ManagerBasedRLEnvCfg):
         }
         self.sim.render.rendering_mode = "quality"
         self.sim.render.antialiasing_mode = "DLAA"
+
+        # Apply semantic tags so the camera's instance-id segmentation only
+        # contains pixels for the robot / tray / trocars (everything else
+        # becomes BACKGROUND, see CameraBaseCfg.semantic_filter).
+        # The trocars and tray are tagged at their spawn site in the scene cfg;
+        # the robot uses a preset, so we patch its spawn here.
+        if self.scene.robot.spawn.semantic_tags is None:
+            self.scene.robot.spawn.semantic_tags = [("class", "robot")]
 
 
 @configclass

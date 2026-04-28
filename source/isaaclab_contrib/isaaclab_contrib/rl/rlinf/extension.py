@@ -89,8 +89,46 @@ def register() -> None:
     _register_gr00t_converters(cfg)
     _patch_gr00t_get_model(cfg)
     _register_isaaclab_envs()
+    _patch_record_video_for_mask()
 
     logger.info("isaaclab_contrib.rl.rlinf.extension: Registration complete.")
+
+
+# ---------------------------------------------------------------------------
+# Video frame key used to ship a composited (RGB | mask) frame to RecordVideo.
+# Adding a dedicated key (instead of overwriting ``main_images``) keeps the
+# GR00T-facing observation pure RGB while still letting RecordVideo pick up
+# the mask-augmented frame.
+# ---------------------------------------------------------------------------
+_VIDEO_FRAME_KEY = "__rgb_mask_video_frames"
+
+
+def _patch_record_video_for_mask() -> None:
+    """Make rlinf's RecordVideo prefer our composited RGB+mask frame.
+
+    The composited frame (key ``_VIDEO_FRAME_KEY``) is produced by ``_wrap_obs``
+    when ``*_camera_mask`` observations are present.  Patching only the lookup
+    function avoids touching rlinf internals or duplicating recorder logic.
+    """
+    try:
+        from rlinf.envs.wrappers import record_video as _rv_mod
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not import rlinf RecordVideo to patch for mask video: {exc}")
+        return
+
+    if getattr(_rv_mod.RecordVideo, "_isaaclab_mask_patched", False):
+        return
+
+    _orig_get_image = _rv_mod.RecordVideo._get_image_from_dict
+
+    def _patched_get_image_from_dict(self, obs):  # type: ignore[no-redef]
+        if isinstance(obs, dict) and obs.get(_VIDEO_FRAME_KEY) is not None:
+            return obs[_VIDEO_FRAME_KEY]
+        return _orig_get_image(self, obs)
+
+    _rv_mod.RecordVideo._get_image_from_dict = _patched_get_image_from_dict
+    _rv_mod.RecordVideo._isaaclab_mask_patched = True
+    logger.info(f"Patched RecordVideo._get_image_from_dict to prefer '{_VIDEO_FRAME_KEY}'")
 
 
 def _load_full_cfg() -> dict:
@@ -273,6 +311,93 @@ def _register_gr00t_converters(cfg: dict) -> None:
     if obs_converter_type not in simulation_io.ACTION_CONVERSION:
         simulation_io.ACTION_CONVERSION[obs_converter_type] = _convert_gr00t_to_isaaclab_action
         logger.info(f"Registered action converter: {obs_converter_type}")
+
+
+def _mask_to_rgb_uint8(mask: torch.Tensor) -> torch.Tensor:
+    """Best-effort conversion of an instance-segmentation tensor to ``uint8 RGB``.
+
+    Handles the two output formats produced by IsaacLab's ``instance_segmentation_fast``
+    annotator:
+
+    - Colorized (default): ``(B, H, W, 4)`` uint8 RGBA — alpha is dropped.
+    - Raw IDs: ``(B, H, W, 1)`` int32 — colorized via a deterministic hash so that
+      each instance ID maps to a stable distinct RGB triplet.
+
+    Args:
+        mask: Mask tensor on any device.
+
+    Returns:
+        ``(B, H, W, 3)`` uint8 tensor on the same device.
+    """
+    if mask.ndim == 4 and mask.shape[-1] == 4 and mask.dtype == torch.uint8:
+        return mask[..., :3].contiguous()
+
+    if mask.ndim == 4 and mask.shape[-1] == 1:
+        ids = mask[..., 0].to(torch.int64)
+    elif mask.ndim == 3:
+        ids = mask.to(torch.int64)
+    else:
+        # Fallback: just clip and broadcast so we don't crash the recording.
+        flat = mask.reshape(*mask.shape[:3], -1)[..., 0].to(torch.int64)
+        ids = flat
+
+    # Deterministic hash: spread IDs across 0..255 per channel.  Background id 0
+    # always maps to black for readability.
+    r = ((ids * 131 + 17) % 251).to(torch.uint8)
+    g = ((ids * 311 + 91) % 241).to(torch.uint8)
+    b = ((ids * 521 + 233) % 233).to(torch.uint8)
+    rgb = torch.stack([r, g, b], dim=-1)
+    rgb = torch.where((ids == 0).unsqueeze(-1), torch.zeros_like(rgb), rgb)
+    return rgb.contiguous()
+
+
+def _resize_uint8_bhwc(img: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
+    """Bilinear resize for ``(B, H, W, C)`` uint8 tensors."""
+    if img.shape[-3] == target_h and img.shape[-2] == target_w:
+        return img
+    x = img.permute(0, 3, 1, 2).float()
+    x = F.interpolate(x, size=(target_h, target_w), mode="bilinear", align_corners=False, antialias=True)
+    x = x.permute(0, 2, 3, 1).clamp(0, 255).to(torch.uint8)
+    return x.contiguous()
+
+
+def _build_video_frame(
+    rgb_views: list[torch.Tensor],
+    mask_views: list[torch.Tensor],
+    tile_h: int = 224,
+    tile_w: int = 224,
+) -> torch.Tensor:
+    """Compose a per-env (RGB | mask) tile for video recording.
+
+    Top row: RGB views (resized to ``tile_h x tile_w``).
+    Bottom row: matching colorized masks (same size).
+
+    Args:
+        rgb_views: list of ``(B, H, W, 3)`` uint8 tensors, one per camera view.
+        mask_views: list of mask tensors (same length as ``rgb_views``); each is
+            converted to uint8 RGB.
+        tile_h: Per-tile height.
+        tile_w: Per-tile width.
+
+    Returns:
+        ``(B, 2 * tile_h, n * tile_w, 3)`` uint8 tensor on the same device.  When
+        ``rgb_views`` is empty an empty tensor is returned.
+    """
+    if not rgb_views:
+        return torch.empty(0)
+
+    rgb_tiles = [_resize_uint8_bhwc(v, tile_h, tile_w) for v in rgb_views]
+    mask_tiles = []
+    for i in range(len(rgb_views)):
+        if i < len(mask_views) and mask_views[i] is not None:
+            mask_rgb = _mask_to_rgb_uint8(mask_views[i])
+            mask_tiles.append(_resize_uint8_bhwc(mask_rgb, tile_h, tile_w))
+        else:
+            mask_tiles.append(torch.zeros_like(rgb_tiles[i]))
+
+    top = torch.cat(rgb_tiles, dim=2)  # (B, tile_h, n*tile_w, 3)
+    bot = torch.cat(mask_tiles, dim=2)
+    return torch.cat([top, bot], dim=1).contiguous()  # (B, 2*tile_h, n*tile_w, 3)
 
 
 def _gpu_resize_images(
@@ -629,6 +754,34 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                 if extra_imgs:
                     rlinf_obs["extra_view_images"] = torch.stack(extra_imgs, dim=1)
 
+            # Composite RGB+mask frame for video recording.  Built whenever any
+            # ``<rgb_key>_mask`` ObsTerm is present.  Not consumed by GR00T:
+            # only RecordVideo's patched _get_image_from_dict reads this key.
+            ordered_rgb_keys: list[str] = []
+            if main_key:
+                ordered_rgb_keys.append(main_key)
+            if extra_keys:
+                ordered_rgb_keys.extend(extra_keys)
+
+            rgb_views: list[torch.Tensor] = []
+            mask_views: list[torch.Tensor] = []
+            any_mask_present = False
+            for k in ordered_rgb_keys:
+                if k in camera_obs:
+                    rgb_views.append(camera_obs[k])
+                    mask_key = f"{k}_mask"
+                    mask = camera_obs.get(mask_key)
+                    if mask is not None:
+                        any_mask_present = True
+                    mask_views.append(mask)
+
+            if rgb_views and any_mask_present:
+                # Tile size: keep modest so that recorder.tile_images() across
+                # all envs stays a reasonable resolution.
+                rlinf_obs[_VIDEO_FRAME_KEY] = _build_video_frame(
+                    rgb_views, mask_views, tile_h=target_h, tile_w=target_w
+                )
+
             # states: list of state specs -> concatenate to (B, D)
             state_specs = cfg.get("states")
             if state_specs:
@@ -671,6 +824,9 @@ def _create_generic_env_wrapper(task_id: str) -> type:
         def add_image(self, obs: dict) -> np.ndarray | None:
             """Get image for video logging.
 
+            Prefers the composited (RGB | mask) frame if available, so that
+            ad-hoc consumers see the same panel layout as the saved MP4s.
+
             Args:
                 obs: Raw observation dictionary from the IsaacLab environment.
 
@@ -678,6 +834,9 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                 A numpy array of shape ``(H, W, C)`` for the first environment, or
                 ``None`` if no camera image is available.
             """
+            video_frame = obs.get(_VIDEO_FRAME_KEY) if isinstance(obs, dict) else None
+            if video_frame is not None:
+                return video_frame[0].cpu().numpy()
             camera_obs = obs.get("camera_images", {})
             cfg = _get_isaaclab_cfg()
             main_key = cfg.get("main_images")

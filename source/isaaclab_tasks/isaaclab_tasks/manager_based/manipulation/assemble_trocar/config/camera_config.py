@@ -51,6 +51,8 @@ class CameraBaseCfg:
         pos_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
         rot_offset: tuple[float, float, float, float] = (0.5, -0.5, 0.5, -0.5),
         data_types: Sequence[str] | None = None,
+        semantic_filter: str = "class: robot|tray|trocar",
+        colorize_instance_segmentation: bool = True,
     ) -> CameraCfg:
         """Get a pinhole camera configuration.
 
@@ -66,12 +68,28 @@ class CameraBaseCfg:
             pos_offset: position offset (x, y, z)
             rot_offset: rotation offset quaternion
             data_types: data type list
+            semantic_filter: Replicator semantic filter predicate. Only prims whose
+                semantic tags match this predicate will appear in the segmentation
+                outputs (everything else becomes BACKGROUND). Defaults to
+                ``"class: robot|tray|trocar"``. Pass ``"*:*"`` to disable filtering.
+            colorize_instance_segmentation: Whether to colorize the instance
+                segmentation as uint8 RGBA. Defaults to True (suitable for video
+                logging). Set to False to get raw int32 IDs.
 
         Returns:
             CameraCfg: camera configuration
+
+        Note:
+            We use ``instance_segmentation_fast`` (not ``instance_id_*``).
+            ``instance_segmentation_fast`` groups by **semantic-tagged asset**
+            (e.g. the entire robot is one color, each trocar is one color),
+            which matches what the ``semantic_filter`` is meant to express.
+            ``instance_id_segmentation_fast`` instead colors every individual
+            prim/mesh, so a tagged robot would still produce hundreds of distinct
+            colors.
         """
         if data_types is None:
-            data_types = ("rgb",)
+            data_types = ("rgb", "instance_segmentation_fast")
 
         return TiledCameraCfg(
             prim_path=prim_path,
@@ -79,6 +97,8 @@ class CameraBaseCfg:
             height=height,
             width=width,
             data_types=list(data_types),
+            semantic_filter=semantic_filter,
+            colorize_instance_segmentation=colorize_instance_segmentation,
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=focal_length,
                 focus_distance=focus_distance,
@@ -111,7 +131,7 @@ class CameraPresets:
             "height": 480,
             "width": 640,
             "update_period": 0.02,
-            "data_types": ["rgb"],
+            "data_types": ["rgb", "instance_segmentation_fast"],
             "focal_length": 12.0,
             "focus_distance": 400.0,
             "horizontal_aperture": 20.0,
@@ -130,7 +150,7 @@ class CameraPresets:
             "height": 480,
             "width": 640,
             "update_period": 0.02,
-            "data_types": ["rgb"],
+            "data_types": ["rgb", "instance_segmentation_fast"],
             "focal_length": 12.0,
             "focus_distance": 400.0,
             "horizontal_aperture": 20.0,
