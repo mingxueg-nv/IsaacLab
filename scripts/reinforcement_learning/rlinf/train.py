@@ -161,18 +161,28 @@ def main():
         if args_cli.resume_dir:
             cfg.runner.resume_dir = args_cli.resume_dir
 
-    # Propagate Cosmos config to Ray actor processes via environment variables.
+    # Propagate video augmentation config to Ray actor processes via environment variables.
     # Ray actors inherit the parent process environment, so these are visible
     # inside every MultiStepRolloutWorker before transforms are constructed.
     if hasattr(cfg, "cosmos") and cfg.cosmos.get("enabled", False):
+        augment_backend = str(cfg.cosmos.get("backend", "cosmos")).lower().replace("-", "_")
         os.environ["COSMOS_ENABLED"] = "true"
+        os.environ["COSMOS_BACKEND"] = augment_backend
         os.environ["COSMOS_CACHE_DIR"] = str(cfg.cosmos.cache_dir)
         os.environ["COSMOS_HOST"] = str(cfg.cosmos.host)
         os.environ["COSMOS_PORTS"] = ",".join(str(p) for p in cfg.cosmos.ports)
         os.environ["COSMOS_PROBABILITY"] = str(cfg.cosmos.probability)
         os.environ["COSMOS_GRID_MODE"] = str(cfg.cosmos.get("grid_mode", False)).lower()
+        os.environ["COSMOS_CONTROL_KIND"] = str(cfg.cosmos.get("control_kind", "edge"))
+        os.environ["COSMOS_INPAINT_BACKGROUND"] = str(cfg.cosmos.get("inpaint_background", False)).lower()
+        os.environ["COSMOS_INPAINT_PRESERVE_DILATION_PX"] = str(
+            cfg.cosmos.get("inpaint_preserve_dilation_px", 0)
+        )
+        if cfg.cosmos.get("debug_dir", None):
+            os.environ["COSMOS_DEBUG_DIR"] = str(cfg.cosmos.debug_dir)
+        os.environ["COSMOS_DEBUG_MAX_SAMPLES"] = str(cfg.cosmos.get("debug_max_samples", 0))
         logger.info(
-            f"Cosmos augmentation enabled: host={cfg.cosmos.host} "
+            f"{augment_backend} augmentation enabled: host={cfg.cosmos.host} "
             f"ports={list(cfg.cosmos.ports)} probability={cfg.cosmos.probability}"
         )
 
@@ -235,4 +245,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

@@ -29,6 +29,13 @@ import isaaclab.sim as sim_utils
 from isaaclab.sensors import CameraCfg, TiledCameraCfg
 from isaaclab.utils import configclass
 
+ASSEMBLE_TROCAR_SEMANTIC_FILTER = [
+    "class:robot",
+    "class:tray",
+    "class:trocar",
+    "class:trocar_device",
+]
+
 
 @configclass
 class CameraBaseCfg:
@@ -53,7 +60,7 @@ class CameraBaseCfg:
         data_types: Sequence[str] | None = None,
         colorize_semantic_segmentation: bool = True,
         colorize_instance_segmentation: bool = True,
-        semantic_filter: str | list[str] = "*:*",
+        semantic_filter: str | list[str] = ASSEMBLE_TROCAR_SEMANTIC_FILTER,
     ) -> CameraCfg:
         """Get a pinhole camera configuration.
 

@@ -126,7 +126,7 @@ parser.add_argument(
     "--cameras",
     type=str,
     nargs="*",
-    default=["front_camera", "left_wrist_camera", "right_wrist_camera"], #["left_wrist_camera", "right_wrist_camera", "front_camera",],
+    default=["left_wrist_camera", "right_wrist_camera", "front_camera"], # ["left_wrist_camera", "right_wrist_camera", "front_camera",], ["front_camera", "left_wrist_camera", "right_wrist_camera"]
     help=(
         "Camera keys to send, in order. The default matches the ``video_keys`` "
         "ordering used by ``IsaacLabDataConfig`` "

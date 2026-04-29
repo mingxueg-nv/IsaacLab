@@ -1,6 +1,28 @@
 Changelog
 ---------
 
+1.5.25 (2026-04-29)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added RLinf Z-Image depth-control background inpainting support for
+  ``assemble_trocar`` training, including multimodal depth/segmentation
+  side-channel propagation and ``VideoZImageAugmentTransform`` request trailers.
+
+
+1.5.24 (2026-04-28)
+~~~~~~~~~~~~~~~~~~~
+
+Changed
+^^^^^^^
+
+* Changed ``assemble_trocar`` multimodal segmentation to use local updated
+  Trocar USD assets and filter masks to the foreground robot, tray, and trocar
+  classes.
+
+
 1.5.23 (2026-04-24)
 ~~~~~~~~~~~~~~~~~~~
 

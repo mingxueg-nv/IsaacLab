@@ -86,6 +86,7 @@ def register() -> None:
     # Load config once and pass to all registration functions
     cfg = _get_isaaclab_cfg()
 
+    _patch_env_output_side_channels()
     _register_gr00t_converters(cfg)
     _patch_gr00t_get_model(cfg)
     _register_isaaclab_envs()
@@ -281,6 +282,8 @@ def _gpu_resize_images(
     target_w: int,
     crop_scale: float = 0.0,
     random_crop: bool = False,
+    crop_params: tuple[int, int, torch.Tensor, torch.Tensor] | None = None,
+    mode: str = "bilinear",
 ) -> torch.Tensor:
     """Crop and resize images entirely on GPU.
 
@@ -297,6 +300,9 @@ def _gpu_resize_images(
             2.5% from each edge, matching ``VideoCrop(scale=0.95)``).
         random_crop: If True, apply per-sample random crop (train).
             If False, apply center crop (eval).
+        crop_params: Optional precomputed crop parameters so paired RGB,
+            depth, and segmentation tensors remain pixel-aligned.
+        mode: Interpolation mode. Use ``"nearest"`` for label maps.
 
     Returns:
         Resized image tensor of shape ``(B, target_h, target_w, C)``,
@@ -304,7 +310,16 @@ def _gpu_resize_images(
     """
     B, h, w = img.shape[0], img.shape[-3], img.shape[-2]
 
-    if crop_scale > 0 and (h != target_h or w != target_w):
+    if crop_params is None:
+        crop_params = _make_gpu_crop_params(img, target_h, target_w, crop_scale, random_crop)
+
+    if crop_params is not None:
+        crop_h, crop_w, tops, lefts = crop_params
+        crops = []
+        for i in range(B):
+            crops.append(img[i, tops[i] : tops[i] + crop_h, lefts[i] : lefts[i] + crop_w, :])
+        img = torch.stack(crops, dim=0)
+    elif crop_scale > 0 and (h != target_h or w != target_w):
         crop_h = int(h * (1 - crop_scale))
         crop_w = int(w * (1 - crop_scale))
         if random_crop:
@@ -326,13 +341,72 @@ def _gpu_resize_images(
 
     orig_dtype = img.dtype
     x = img.permute(0, 3, 1, 2).float()
-    x = F.interpolate(x, size=(target_h, target_w), mode="bilinear", align_corners=False, antialias=True)
+    interpolate_kwargs = {"size": (target_h, target_w), "mode": mode}
+    if mode in {"bilinear", "bicubic"}:
+        interpolate_kwargs.update({"align_corners": False, "antialias": True})
+    x = F.interpolate(x, **interpolate_kwargs)
     x = x.permute(0, 2, 3, 1)
     if orig_dtype == torch.uint8:
         x = x.clamp(0, 255).to(torch.uint8)
     else:
         x = x.to(orig_dtype)
     return x
+
+
+def _make_gpu_crop_params(
+    img: torch.Tensor,
+    target_h: int,
+    target_w: int,
+    crop_scale: float,
+    random_crop: bool,
+) -> tuple[int, int, torch.Tensor, torch.Tensor] | None:
+    """Return crop parameters shared by RGB/depth/segmentation tensors."""
+    B, h, w = img.shape[0], img.shape[-3], img.shape[-2]
+    if crop_scale <= 0 or (h == target_h and w == target_w):
+        return None
+
+    crop_h = int(h * (1 - crop_scale))
+    crop_w = int(w * (1 - crop_scale))
+    if random_crop:
+        max_top = h - crop_h
+        max_left = w - crop_w
+        tops = torch.randint(0, max_top + 1, (B,), device=img.device)
+        lefts = torch.randint(0, max_left + 1, (B,), device=img.device)
+    else:
+        tops = torch.full((B,), (h - crop_h) // 2, device=img.device, dtype=torch.long)
+        lefts = torch.full((B,), (w - crop_w) // 2, device=img.device, dtype=torch.long)
+    return crop_h, crop_w, tops, lefts
+
+
+def _z_image_side_key(kind: str, video_key: str) -> str:
+    """Return a hidden side-channel key for Z-Image controls."""
+    return f"__z_image_{kind}__::{video_key}"
+
+
+def _patch_env_output_side_channels() -> None:
+    """Keep Z-Image depth/segmentation side channels in RLinf EnvOutput."""
+    from rlinf.data.embodied_io_struct import EnvOutput
+
+    if getattr(EnvOutput, "_isaaclab_z_image_side_channels_patched", False):
+        return
+
+    original_prepare_observations = EnvOutput.prepare_observations
+    side_channel_keys = (
+        "main_depth",
+        "main_semantic_segmentation",
+        "extra_view_depth",
+        "extra_view_semantic_segmentation",
+    )
+
+    def prepare_observations_with_side_channels(self, obs: dict) -> dict:
+        prepared = original_prepare_observations(self, obs)
+        for key in side_channel_keys:
+            if key in obs:
+                prepared[key] = obs[key]
+        return prepared
+
+    EnvOutput.prepare_observations = prepare_observations_with_side_channels
+    EnvOutput._isaaclab_z_image_side_channels_patched = True
 
 
 def _convert_isaaclab_obs_to_gr00t(env_obs: dict) -> dict:
@@ -372,6 +446,16 @@ def _convert_isaaclab_obs_to_gr00t(env_obs: dict) -> dict:
         gr00t_key = video_mapping.get("main_images", "video.room_view")
         if isinstance(main, torch.Tensor):
             cpu_pending[gr00t_key] = main.unsqueeze(1).cpu(memory_format=torch.contiguous_format)
+        if "main_depth" in env_obs and isinstance(env_obs["main_depth"], torch.Tensor):
+            cpu_pending[_z_image_side_key("depth", gr00t_key)] = env_obs["main_depth"].unsqueeze(1).cpu(
+                memory_format=torch.contiguous_format
+            )
+        if "main_semantic_segmentation" in env_obs and isinstance(
+            env_obs["main_semantic_segmentation"], torch.Tensor
+        ):
+            cpu_pending[_z_image_side_key("segmentation", gr00t_key)] = env_obs[
+                "main_semantic_segmentation"
+            ].unsqueeze(1).cpu(memory_format=torch.contiguous_format)
 
     if "extra_view_images" in env_obs:
         extra = env_obs["extra_view_images"]  # (B, N, H, W, C) tensor
@@ -380,6 +464,20 @@ def _convert_isaaclab_obs_to_gr00t(env_obs: dict) -> dict:
             for i, key in enumerate(extra_keys):
                 if i < extra.shape[1]:
                     cpu_pending[key] = extra[:, i].unsqueeze(1).cpu(memory_format=torch.contiguous_format)
+        extra_depth = env_obs.get("extra_view_depth")
+        if isinstance(extra_depth, torch.Tensor):
+            for i, key in enumerate(extra_keys):
+                if i < extra_depth.shape[1]:
+                    cpu_pending[_z_image_side_key("depth", key)] = extra_depth[:, i].unsqueeze(1).cpu(
+                        memory_format=torch.contiguous_format
+                    )
+        extra_seg = env_obs.get("extra_view_semantic_segmentation")
+        if isinstance(extra_seg, torch.Tensor):
+            for i, key in enumerate(extra_keys):
+                if i < extra_seg.shape[1]:
+                    cpu_pending[_z_image_side_key("segmentation", key)] = extra_seg[:, i].unsqueeze(1).cpu(
+                        memory_format=torch.contiguous_format
+                    )
 
     if "states" in env_obs and state_mapping:
         states = env_obs["states"]
@@ -506,7 +604,6 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                 total_num_processes: Total number of worker processes.
                 worker_info: RLinf worker metadata.
             """
-            super().__init__(cfg, num_envs, seed_offset, total_num_processes, worker_info)
             isaaclab_cfg = getattr(cfg, "isaaclab", None)
             if isaaclab_cfg is not None:
                 from omegaconf import OmegaConf
@@ -514,6 +611,7 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                 self._isaaclab_cfg = OmegaConf.to_container(isaaclab_cfg, resolve=True)
             else:
                 self._isaaclab_cfg = None
+            super().__init__(cfg, num_envs, seed_offset, total_num_processes, worker_info)
 
         def _make_env_function(self) -> collections.abc.Callable:
             """Create the environment factory function.
@@ -544,7 +642,83 @@ def _create_generic_env_wrapper(task_id: str) -> type:
 
                 env = gym.make(self.isaaclab_env_id, cfg=isaac_env_cfg, render_mode="rgb_array").unwrapped
 
+                z_image_preserve_classes = (
+                    (self._isaaclab_cfg or {}).get(
+                        "z_image_inpaint_preserve_classes",
+                        ["robot", "tray", "trocar", "trocar_device"],
+                    )
+                    if isinstance(self._isaaclab_cfg, dict)
+                    else ["robot", "tray", "trocar", "trocar_device"]
+                )
+                z_image_preserve_classes = {str(c).lower() for c in z_image_preserve_classes}
+                _z_image_label_id_cache: dict[str, list[int]] = {}
+                _z_image_logged_label_ids = False
+
+                def _resolve_z_image_preserve_label_ids(camera_name: str) -> list[int]:
+                    if camera_name in _z_image_label_id_cache:
+                        return _z_image_label_id_cache[camera_name]
+
+                    sensor = env.scene.sensors.get(camera_name)
+                    info = getattr(sensor.data, "info", {}) if sensor is not None else {}
+                    meta = (info or {}).get("semantic_segmentation") or {}
+                    id_to_labels = meta.get("idToLabels") or {}
+                    label_ids: list[int] = []
+                    for key, label in id_to_labels.items():
+                        if isinstance(label, dict):
+                            values = {str(v).lower() for v in label.values()}
+                        else:
+                            values = {str(label).lower()}
+                        if values & z_image_preserve_classes:
+                            try:
+                                label_ids.append(int(key))
+                            except (TypeError, ValueError):
+                                continue
+                    _z_image_label_id_cache[camera_name] = sorted(set(label_ids))
+                    return _z_image_label_id_cache[camera_name]
+
+                def _replace_semantic_ids_with_z_image_foreground_masks(obs: dict) -> dict:
+                    """Convert raw semantic IDs into binary foreground masks for Z-Image.
+
+                    The Isaac/Replicator semantic ID space is per camera and can
+                    include scene/background labels.  For background inpainting we
+                    must preserve only configured foreground classes, so resolve
+                    camera-local IDs from ``idToLabels`` here while that metadata is
+                    still available in the Isaac Sim child process.
+                    """
+                    seg_group = obs.get("camera_semantic_segmentation")
+                    if not isinstance(seg_group, dict):
+                        return obs
+
+                    nonlocal _z_image_logged_label_ids
+                    out_group = {}
+                    label_log: dict[str, list[int]] = {}
+                    for camera_name, seg in seg_group.items():
+                        if not isinstance(seg, torch.Tensor):
+                            out_group[camera_name] = seg
+                            continue
+
+                        preserve_ids = _resolve_z_image_preserve_label_ids(camera_name)
+                        label_log[camera_name] = preserve_ids
+                        seg_ids = seg[..., 0] if seg.ndim >= 1 and seg.shape[-1] == 1 else seg
+                        foreground = torch.zeros_like(seg_ids, dtype=torch.bool)
+                        for label_id in preserve_ids:
+                            foreground |= seg_ids.to(dtype=torch.int64) == int(label_id)
+                        out_group[camera_name] = foreground.unsqueeze(-1).to(dtype=torch.float32)
+
+                    if not _z_image_logged_label_ids:
+                        print(
+                            "[z_image_foreground_mask] preserve_classes="
+                            f"{sorted(z_image_preserve_classes)} preserve_ids={label_log}",
+                            flush=True,
+                        )
+                        _z_image_logged_label_ids = True
+
+                    obs = dict(obs)
+                    obs["camera_semantic_segmentation"] = out_group
+                    return obs
+
                 _original_reset = env.reset
+                _original_step = env.step
 
                 import omni.kit.app
 
@@ -558,10 +732,18 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                     for sensor in env.scene.sensors.values():
                         sensor.update(dt=0.0, force_recompute=True)
                     obs = env.observation_manager.compute(update_history=True)
+                    obs = _replace_semantic_ids_with_z_image_foreground_masks(obs)
                     env.obs_buf = obs
                     return obs, extras
 
+                def _patched_step(*args, **kwargs):
+                    obs, reward, terminated, truncated, extras = _original_step(*args, **kwargs)
+                    obs = _replace_semantic_ids_with_z_image_foreground_masks(obs)
+                    env.obs_buf = obs
+                    return obs, reward, terminated, truncated, extras
+
                 env.reset = _patched_reset
+                env.step = _patched_step
 
                 return env, sim_app
 
@@ -590,6 +772,8 @@ def _create_generic_env_wrapper(task_id: str) -> type:
             """
             policy_obs = obs.get("policy", obs)
             camera_obs = obs.get("camera_images", {})
+            depth_obs = obs.get("camera_depth", {})
+            seg_obs = obs.get("camera_semantic_segmentation", {})
 
             cfg = self._isaaclab_cfg if self._isaaclab_cfg is not None else _get_isaaclab_cfg()
             task_desc = cfg.get("task_description", "") or self.task_description
@@ -609,9 +793,38 @@ def _create_generic_env_wrapper(task_id: str) -> type:
             # main_images: GPU crop+resize then store
             main_key = cfg.get("main_images")
             if main_key and main_key in camera_obs:
-                rlinf_obs["main_images"] = _gpu_resize_images(
+                crop_params = _make_gpu_crop_params(
                     camera_obs[main_key], target_h, target_w, crop_scale, random_crop
                 )
+                rlinf_obs["main_images"] = _gpu_resize_images(
+                    camera_obs[main_key],
+                    target_h,
+                    target_w,
+                    crop_scale,
+                    random_crop,
+                    crop_params=crop_params,
+                    mode="bilinear",
+                )
+                if main_key in depth_obs:
+                    rlinf_obs["main_depth"] = _gpu_resize_images(
+                        depth_obs[main_key],
+                        target_h,
+                        target_w,
+                        crop_scale,
+                        random_crop,
+                        crop_params=crop_params,
+                        mode="bilinear",
+                    )
+                if main_key in seg_obs:
+                    rlinf_obs["main_semantic_segmentation"] = _gpu_resize_images(
+                        seg_obs[main_key],
+                        target_h,
+                        target_w,
+                        crop_scale,
+                        random_crop,
+                        crop_params=crop_params,
+                        mode="nearest",
+                    )
 
             # extra_view_images: GPU crop+resize each, then stack to (B, N, H, W, C)
             # Must remain a tensor (not list) because RLinf's split_env_batch
@@ -621,13 +834,52 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                 if isinstance(extra_keys, str):
                     extra_keys = [extra_keys]
                 extra_imgs = []
+                extra_depths = []
+                extra_segs = []
                 for k in extra_keys:
                     if k in camera_obs:
+                        crop_params = _make_gpu_crop_params(camera_obs[k], target_h, target_w, crop_scale, random_crop)
                         extra_imgs.append(
-                            _gpu_resize_images(camera_obs[k], target_h, target_w, crop_scale, random_crop)
+                            _gpu_resize_images(
+                                camera_obs[k],
+                                target_h,
+                                target_w,
+                                crop_scale,
+                                random_crop,
+                                crop_params=crop_params,
+                                mode="bilinear",
+                            )
                         )
+                        if k in depth_obs:
+                            extra_depths.append(
+                                _gpu_resize_images(
+                                    depth_obs[k],
+                                    target_h,
+                                    target_w,
+                                    crop_scale,
+                                    random_crop,
+                                    crop_params=crop_params,
+                                    mode="bilinear",
+                                )
+                            )
+                        if k in seg_obs:
+                            extra_segs.append(
+                                _gpu_resize_images(
+                                    seg_obs[k],
+                                    target_h,
+                                    target_w,
+                                    crop_scale,
+                                    random_crop,
+                                    crop_params=crop_params,
+                                    mode="nearest",
+                                )
+                            )
                 if extra_imgs:
                     rlinf_obs["extra_view_images"] = torch.stack(extra_imgs, dim=1)
+                    if len(extra_depths) == len(extra_imgs):
+                        rlinf_obs["extra_view_depth"] = torch.stack(extra_depths, dim=1)
+                    if len(extra_segs) == len(extra_imgs):
+                        rlinf_obs["extra_view_semantic_segmentation"] = torch.stack(extra_segs, dim=1)
 
             # states: list of state specs -> concatenate to (B, D)
             state_specs = cfg.get("states")

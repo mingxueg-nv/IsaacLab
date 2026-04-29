@@ -24,7 +24,15 @@ from gr00t.data.dataset import ModalityConfig
 from gr00t.data.transform.base import ComposedModalityTransform
 from gr00t.data.transform.concat import ConcatTransform
 from gr00t.data.transform.state_action import StateActionSinCosTransform, StateActionToTensor, StateActionTransform
-from gr00t.data.transform.video import VideoColorJitter, VideoCosmosAugmentTransform, VideoToNumpy, VideoToTensor, VideoCrop, VideoResize
+from gr00t.data.transform.video import (
+    VideoColorJitter,
+    VideoCosmosAugmentTransform,
+    VideoCrop,
+    VideoResize,
+    VideoToNumpy,
+    VideoToTensor,
+    VideoZImageAugmentTransform,
+)
 from gr00t.experiment.data_config import DATA_CONFIG_MAP, BaseDataConfig
 from gr00t.model.transforms import GR00TTransform
 
@@ -110,22 +118,42 @@ class IsaacLabDataConfig(BaseDataConfig):
             # ),
         ]
 
-        # Optional Cosmos-Transfer2.5 augmentation.
+        # Optional sim-to-real video augmentation.
         # Enabled by setting COSMOS_ENABLED=true in the environment (done by train.py
-        # when cosmos.enabled=true in the YAML config).  Each RLinf rollout worker
-        # sets COSMOS_WORKER_ID=<rank> so it connects to its own Cosmos service port.
+        # when cosmos.enabled=true in the YAML config). Each RLinf rollout worker
+        # sets COSMOS_WORKER_ID=<rank> so it connects to its own service port.
         if os.environ.get("COSMOS_ENABLED", "").lower() == "true":
-            transforms.append(
-                VideoCosmosAugmentTransform(
-                    apply_to=self.video_keys,
-                    cache_dir=os.environ.get("COSMOS_CACHE_DIR", "/tmp/cosmos_cache"),
-                    host=os.environ.get("COSMOS_HOST", "localhost"),
-                    ports=[int(p) for p in os.environ.get("COSMOS_PORTS", "5557").split(",")],
-                    probability=float(os.environ.get("COSMOS_PROBABILITY", "0.5")),
-                    seed=None,
-                    grid_mode=os.environ.get("COSMOS_GRID_MODE", "false").lower() == "true",
+            backend = os.environ.get("COSMOS_BACKEND", "cosmos").lower().replace("-", "_")
+            if backend == "cosmos":
+                augment_cls = VideoCosmosAugmentTransform
+            elif backend in {"z_image", "zimage"}:
+                augment_cls = VideoZImageAugmentTransform
+            else:
+                raise ValueError(f"Unsupported video augmentation backend: {backend!r}")
+
+            augment_kwargs = {
+                "apply_to": self.video_keys,
+                "cache_dir": os.environ.get("COSMOS_CACHE_DIR", "/tmp/cosmos_cache"),
+                "host": os.environ.get("COSMOS_HOST", "localhost"),
+                "ports": [int(p) for p in os.environ.get("COSMOS_PORTS", "5557").split(",")],
+                "probability": float(os.environ.get("COSMOS_PROBABILITY", "0.5")),
+                "seed": None,
+                "grid_mode": os.environ.get("COSMOS_GRID_MODE", "false").lower() == "true",
+            }
+            if augment_cls is VideoZImageAugmentTransform:
+                augment_kwargs.update(
+                    {
+                        "control_kind": os.environ.get("COSMOS_CONTROL_KIND", "depth"),
+                        "inpaint_background": os.environ.get("COSMOS_INPAINT_BACKGROUND", "true").lower() == "true",
+                        "inpaint_preserve_dilation_px": int(
+                            os.environ.get("COSMOS_INPAINT_PRESERVE_DILATION_PX", "2")
+                        ),
+                        "debug_dir": os.environ.get("COSMOS_DEBUG_DIR") or None,
+                        "debug_max_samples": int(os.environ.get("COSMOS_DEBUG_MAX_SAMPLES", "0")),
+                    }
                 )
-            )
+
+            transforms.append(augment_cls(**augment_kwargs))
 
         transforms += [
             VideoColorJitter(

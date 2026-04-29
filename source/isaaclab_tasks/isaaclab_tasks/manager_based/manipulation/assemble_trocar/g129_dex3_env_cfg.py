@@ -18,6 +18,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+from pathlib import Path
+
 from isaaclab_physx.physics import PhysxCfg
 
 import isaaclab.envs.mdp as base_mdp
@@ -96,6 +99,11 @@ offset_dict = {
 
 HEALTHCARE_S3 = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/Healthcare/0.5.0/132c82d"
 USD_ROOT = f"{HEALTHCARE_S3}/Props/LightWheel"
+REPO_ROOT = Path(__file__).resolve().parents[6]
+LOCAL_USD_ROOT = os.environ.get(
+    "ASSEMBLE_TROCAR_USD_ROOT",
+    str(REPO_ROOT / "assets" / "assemble_trocar"),
+)
 
 
 @configclass
@@ -121,7 +129,7 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
     trocar_1 = RigidObjectCfg(
         prim_path="/World/envs/env_.*/trocar_1",
         spawn=UsdFileCfg(
-            usd_path=f"{USD_ROOT}/Assets/Trocar002/Trocar002-xform-wo.usd",
+            usd_path=f"{LOCAL_USD_ROOT}/Assets/Trocar002/Trocar004_test.usd",
             collision_props=sim_utils.CollisionPropertiesCfg(
                 collision_enabled=True,
                 contact_offset=0.001,
@@ -138,9 +146,9 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
         prim_path="/World/envs/env_.*/trocar_2",
         spawn=UsdFileCfg(
             usd_path=(
-                f"{USD_ROOT}/Assets/"
+                f"{LOCAL_USD_ROOT}/Assets/"
                 "DisposableLaparoscopicPunctureDevice001/"
-                "DisposableLaparoscopicPunctureDevice005-xform.usd"
+                "DisposableLaparoscopicPunctureDevice006_test.usd"
             ),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
@@ -460,15 +468,10 @@ MULTIMODAL_DATA_TYPES = (
     "semantic_segmentation",
 )
 
-# Per-sub-prim semantic labels to apply inside the scene USD so each object
-# renders as its own class (not all as ``background``). Applied on the prototype
-# prim before ``@clone`` replicates it across envs, so every env carries the
-# same labels without a per-env traversal.
-SCENE_SUBPRIM_SEMANTIC_MAP: dict[str, str] = {
-    "Cart001": "cart",
-    "FlatGrid": "ground",
-    "InstrumentTrolley002": "instrument_trolley",
-}
+# Scene-level labels are intentionally omitted from the segmentation mask path.
+# The semantic filter keeps only robot, tray, and the two trocar foreground
+# assets so built-in scene USD labels do not add noise to the masks.
+SCENE_SUBPRIM_SEMANTIC_MAP: dict[str, str] = {}
 
 
 @clone
