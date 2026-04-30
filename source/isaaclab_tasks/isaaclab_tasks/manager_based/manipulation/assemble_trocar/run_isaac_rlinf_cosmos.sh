@@ -71,16 +71,39 @@ pip install pyzmq
 # ---- Run ----
 # train
 python scripts/reinforcement_learning/rlinf/train.py \
-  --config_path /localhome/local-pengfeig/mingxue/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar \
-  --model_path /localhome/local-pengfeig/mingxue/models/gr00t_sft/ \
-  2>&1 | tee train.log
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/orca-dev-test/rlinf/actor/model_state_dict \
+  2>&1 | tee train_from_mingxue_0.6_rlinf_no_cosmos.log
+
+python scripts/reinforcement_learning/rlinf/train.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/orca-dev-test/rlinf/actor/model_state_dict \
+  2>&1 | tee train_from_mingxue_0.6_rlinf_z_image.log
 
 # play
 python scripts/reinforcement_learning/rlinf/play.py \
-  --config_path /localhome/local-pengfeig/mingxue/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar \
-  --model_path /localhome/local-pengfeig/mingxue/models/rlinf \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps \
   --num_envs 8 \
   --video \
-  2>&1 | tee play.log
+  2>&1 | tee play_8env_sim6_gr00t_n15_50ksteps.log
+
+python scripts/reinforcement_learning/rlinf/play.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_yiheng \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps \
+  --num_envs 8 \
+  --video \
+  2>&1 | tee play_8env_chunk4_sim6_gr00t_n15_50ksteps.log
+
+python scripts/reinforcement_learning/rlinf/play.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/orca-dev-test/rlinf/actor/model_state_dict \
+  --num_envs 8 \
+  --video \
+  2>&1 | tee play_8env_mingxue_0.6_rlinf.log
+

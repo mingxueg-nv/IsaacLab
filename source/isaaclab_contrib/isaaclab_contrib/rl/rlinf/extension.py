@@ -650,11 +650,14 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                     if isinstance(self._isaaclab_cfg, dict)
                     else ["robot", "tray", "trocar", "trocar_device"]
                 )
-                z_image_preserve_classes = {str(c).lower() for c in z_image_preserve_classes}
-                _z_image_label_id_cache: dict[str, list[int]] = {}
+                z_image_preserve_class_names = [str(c).lower() for c in z_image_preserve_classes]
+                z_image_preserve_class_set = set(z_image_preserve_class_names)
+                z_image_class_to_index = {name: i + 1 for i, name in enumerate(z_image_preserve_class_names)}
+                _z_image_label_id_cache: dict[str, dict[int, int]] = {}
+                _z_image_label_log_cache: dict[str, dict[int, str]] = {}
                 _z_image_logged_label_ids = False
 
-                def _resolve_z_image_preserve_label_ids(camera_name: str) -> list[int]:
+                def _resolve_z_image_preserve_label_ids(camera_name: str) -> dict[int, int]:
                     if camera_name in _z_image_label_id_cache:
                         return _z_image_label_id_cache[camera_name]
 
@@ -662,28 +665,36 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                     info = getattr(sensor.data, "info", {}) if sensor is not None else {}
                     meta = (info or {}).get("semantic_segmentation") or {}
                     id_to_labels = meta.get("idToLabels") or {}
-                    label_ids: list[int] = []
+                    label_to_class_index: dict[int, int] = {}
+                    label_to_class_name: dict[int, str] = {}
                     for key, label in id_to_labels.items():
                         if isinstance(label, dict):
                             values = {str(v).lower() for v in label.values()}
                         else:
                             values = {str(label).lower()}
-                        if values & z_image_preserve_classes:
-                            try:
-                                label_ids.append(int(key))
-                            except (TypeError, ValueError):
-                                continue
-                    _z_image_label_id_cache[camera_name] = sorted(set(label_ids))
+                        if not (values & z_image_preserve_class_set):
+                            continue
+                        matched_class = next((name for name in z_image_preserve_class_names if name in values), None)
+                        if matched_class is None:
+                            continue
+                        try:
+                            label_id = int(key)
+                        except (TypeError, ValueError):
+                            continue
+                        label_to_class_index[label_id] = z_image_class_to_index[matched_class]
+                        label_to_class_name[label_id] = matched_class
+                    _z_image_label_id_cache[camera_name] = label_to_class_index
+                    _z_image_label_log_cache[camera_name] = label_to_class_name
                     return _z_image_label_id_cache[camera_name]
 
                 def _replace_semantic_ids_with_z_image_foreground_masks(obs: dict) -> dict:
-                    """Convert raw semantic IDs into binary foreground masks for Z-Image.
+                    """Convert raw semantic IDs into foreground class-index masks for Z-Image.
 
                     The Isaac/Replicator semantic ID space is per camera and can
-                    include scene/background labels.  For background inpainting we
-                    must preserve only configured foreground classes, so resolve
-                    camera-local IDs from ``idToLabels`` here while that metadata is
-                    still available in the Isaac Sim child process.
+                    include scene/background labels. For background inpainting we
+                    preserve only configured foreground classes. We keep a small
+                    class index in the mask so debug dumps can render different
+                    foreground object categories in different colors.
                     """
                     seg_group = obs.get("camera_semantic_segmentation")
                     if not isinstance(seg_group, dict):
@@ -697,18 +708,23 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                             out_group[camera_name] = seg
                             continue
 
-                        preserve_ids = _resolve_z_image_preserve_label_ids(camera_name)
-                        label_log[camera_name] = preserve_ids
+                        label_to_class_index = _resolve_z_image_preserve_label_ids(camera_name)
+                        label_log[camera_name] = _z_image_label_log_cache.get(camera_name, {})
                         seg_ids = seg[..., 0] if seg.ndim >= 1 and seg.shape[-1] == 1 else seg
-                        foreground = torch.zeros_like(seg_ids, dtype=torch.bool)
-                        for label_id in preserve_ids:
-                            foreground |= seg_ids.to(dtype=torch.int64) == int(label_id)
-                        out_group[camera_name] = foreground.unsqueeze(-1).to(dtype=torch.float32)
+                        class_mask = torch.zeros_like(seg_ids, dtype=torch.float32)
+                        seg_ids_i64 = seg_ids.to(dtype=torch.int64)
+                        for label_id, class_index in label_to_class_index.items():
+                            class_mask = torch.where(
+                                seg_ids_i64 == int(label_id),
+                                torch.full_like(class_mask, float(class_index)),
+                                class_mask,
+                            )
+                        out_group[camera_name] = class_mask.unsqueeze(-1)
 
                     if not _z_image_logged_label_ids:
                         print(
                             "[z_image_foreground_mask] preserve_classes="
-                            f"{sorted(z_image_preserve_classes)} preserve_ids={label_log}",
+                            f"{z_image_preserve_class_names} label_to_class={label_log}",
                             flush=True,
                         )
                         _z_image_logged_label_ids = True
