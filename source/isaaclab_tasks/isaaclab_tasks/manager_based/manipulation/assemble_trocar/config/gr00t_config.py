@@ -148,6 +148,7 @@ class IsaacLabDataConfig(BaseDataConfig):
                         "inpaint_preserve_dilation_px": int(
                             os.environ.get("COSMOS_INPAINT_PRESERVE_DILATION_PX", "2")
                         ),
+                        "batch_requests": os.environ.get("COSMOS_BATCH_REQUESTS", "false").lower() == "true",
                         "debug_dir": os.environ.get("COSMOS_DEBUG_DIR") or None,
                         "debug_max_samples": int(os.environ.get("COSMOS_DEBUG_MAX_SAMPLES", "0")),
                     }

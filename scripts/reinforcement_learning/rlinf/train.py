@@ -178,12 +178,14 @@ def main():
         os.environ["COSMOS_INPAINT_PRESERVE_DILATION_PX"] = str(
             cfg.cosmos.get("inpaint_preserve_dilation_px", 0)
         )
+        os.environ["COSMOS_BATCH_REQUESTS"] = str(cfg.cosmos.get("batch_requests", False)).lower()
         if cfg.cosmos.get("debug_dir", None):
             os.environ["COSMOS_DEBUG_DIR"] = str(cfg.cosmos.debug_dir)
         os.environ["COSMOS_DEBUG_MAX_SAMPLES"] = str(cfg.cosmos.get("debug_max_samples", 0))
         logger.info(
             f"{augment_backend} augmentation enabled: host={cfg.cosmos.host} "
-            f"ports={list(cfg.cosmos.ports)} probability={cfg.cosmos.probability}"
+            f"ports={list(cfg.cosmos.ports)} probability={cfg.cosmos.probability} "
+            f"batch_requests={cfg.cosmos.get('batch_requests', False)}"
         )
 
     # Validate config

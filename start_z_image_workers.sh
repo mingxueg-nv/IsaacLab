@@ -34,9 +34,17 @@
 #   --log-dir DIR         Directory for per-worker log files (default: ./z_image_logs)
 #   --wait-ready          Block until all workers print "ready" (default: off)
 #   --ready-timeout SEC   Max seconds to wait for readiness (default: 900)
+#   --warmup              After readiness, send one dummy batched inpaint/control
+#                         request to each worker. Implies --wait-ready.
+#   --warmup-batch-size N Batch size for warmup request (default: 8)
+#   --warmup-time-steps N Time dimension for warmup request (default: 1)
+#   --warmup-height PX    Warmup image height (default: 448)
+#   --warmup-width PX     Warmup image width (default: 448)
+#   --warmup-seed SEED    Base seed for warmup requests (default: 20260430)
+#   --warmup-timeout SEC  Per-worker warmup timeout (default: 900)
 #
 # Example (8 GPUs, ports 5657-5664):
-#   ./start_z_image_workers.sh --num-gpus 8 --base-port 5657 --wait-ready
+#   ./start_z_image_workers.sh --num-gpus 8 --base-port 5657 --wait-ready --warmup
 #
 # Example with extra service args:
 #   ./start_z_image_workers.sh --num-gpus 1 -- --sigmas 1.0 0.65
@@ -54,6 +62,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GROOT_DIR="${SCRIPT_DIR}/Isaac-GR00T"
 VIDEOX_FUN_DIR="${GROOT_DIR}/third_party/VideoX-Fun"
 Z_IMAGE_SERVICE="${GROOT_DIR}/scripts/z_image_service.py"
+Z_IMAGE_WARMUP="${GROOT_DIR}/scripts/warmup_z_image_service.py"
 Z_IMAGE_VENV="${VIDEOX_FUN_DIR}/.venv/bin/python"
 PID_FILE="/tmp/z_image_worker_pids.txt"
 
@@ -71,6 +80,13 @@ HF_HOME="${HF_HOME:-/tmp/hf_cache}"
 LOG_DIR="${SCRIPT_DIR}/z_image_logs"
 WAIT_READY=0
 READY_TIMEOUT=900
+WARMUP=0
+WARMUP_BATCH_SIZE=8
+WARMUP_TIME_STEPS=1
+WARMUP_HEIGHT=448
+WARMUP_WIDTH=448
+WARMUP_SEED=20260430
+WARMUP_TIMEOUT=900
 
 CONFIG_PATH=""
 MODEL_NAME=""
@@ -110,6 +126,13 @@ while [[ $# -gt 0 ]]; do
         --log-dir)                  LOG_DIR="$2";                  shift 2 ;;
         --wait-ready)               WAIT_READY=1;                  shift ;;
         --ready-timeout)            READY_TIMEOUT="$2";            shift 2 ;;
+        --warmup)                   WARMUP=1; WAIT_READY=1;       shift ;;
+        --warmup-batch-size)        WARMUP_BATCH_SIZE="$2";        shift 2 ;;
+        --warmup-time-steps)        WARMUP_TIME_STEPS="$2";        shift 2 ;;
+        --warmup-height)            WARMUP_HEIGHT="$2";            shift 2 ;;
+        --warmup-width)             WARMUP_WIDTH="$2";             shift 2 ;;
+        --warmup-seed)              WARMUP_SEED="$2";              shift 2 ;;
+        --warmup-timeout)           WARMUP_TIMEOUT="$2";           shift 2 ;;
         --)
             shift
             EXTRA_ARGS+=("$@")
@@ -134,6 +157,11 @@ fi
 
 if [[ ! -f "${Z_IMAGE_SERVICE}" ]]; then
     echo "[ERROR] z_image_service.py not found at: ${Z_IMAGE_SERVICE}" >&2
+    exit 1
+fi
+
+if [[ "${WARMUP}" -eq 1 && ! -f "${Z_IMAGE_WARMUP}" ]]; then
+    echo "[ERROR] warmup_z_image_service.py not found at: ${Z_IMAGE_WARMUP}" >&2
     exit 1
 fi
 
@@ -210,6 +238,11 @@ echo "[INFO] Base port      : ${BASE_PORT}"
 echo "[INFO] GPU offset     : ${GPU_OFFSET}"
 echo "[INFO] HF_HOME        : ${HF_HOME}"
 echo "[INFO] Log directory  : ${LOG_DIR}"
+if [[ "${WARMUP}" -eq 1 ]]; then
+    echo "[INFO] Warmup         : enabled (B=${WARMUP_BATCH_SIZE}, T=${WARMUP_TIME_STEPS}, ${WARMUP_HEIGHT}x${WARMUP_WIDTH})"
+else
+    echo "[INFO] Warmup         : disabled"
+fi
 echo ""
 
 PIDS=()
@@ -274,6 +307,10 @@ if [[ "${WAIT_READY}" -eq 1 ]]; then
     else
         echo "[WARN] Timed out after ${READY_TIMEOUT}s. Only ${READY_COUNT}/${NUM_GPUS} workers ready."
         echo "       Check logs in ${LOG_DIR}/ for errors."
+        if [[ "${WARMUP}" -eq 1 ]]; then
+            echo "[ERROR] Cannot warm up until all workers are ready." >&2
+            exit 1
+        fi
     fi
 else
     echo "[INFO] Workers starting in background. Monitor with:"
@@ -281,5 +318,52 @@ else
         GPU_ID=$((GPU_OFFSET + i))
         PORT=$((BASE_PORT + i))
         echo "         tail -f ${LOG_DIR}/z_image_worker_gpu${GPU_ID}_port${PORT}.log"
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# Optionally warm up the batched Z-Image inpaint/control path
+# ---------------------------------------------------------------------------
+if [[ "${WARMUP}" -eq 1 ]]; then
+    echo ""
+    echo "[INFO] Warming up ${NUM_GPUS} Z-Image worker(s) with batched dummy requests..."
+    WARMUP_PIDS=()
+    WARMUP_LOGS=()
+    for i in $(seq 0 $((NUM_GPUS - 1))); do
+        GPU_ID=$((GPU_OFFSET + i))
+        PORT=$((BASE_PORT + i))
+        WARMUP_LOG="${LOG_DIR}/z_image_warmup_gpu${GPU_ID}_port${PORT}.log"
+        WARMUP_LOGS+=("${WARMUP_LOG}")
+        echo "[INFO] Warmup GPU ${GPU_ID}, port ${PORT} -> ${WARMUP_LOG}"
+        (
+            "${Z_IMAGE_VENV}" "${Z_IMAGE_WARMUP}" \
+                --host localhost \
+                --ports "${PORT}" \
+                --batch-size "${WARMUP_BATCH_SIZE}" \
+                --time-steps "${WARMUP_TIME_STEPS}" \
+                --height "${WARMUP_HEIGHT}" \
+                --width "${WARMUP_WIDTH}" \
+                --seed "$((WARMUP_SEED + i * 1000003))" \
+                --timeout-s "${WARMUP_TIMEOUT}"
+        ) > "${WARMUP_LOG}" 2>&1 &
+        WARMUP_PIDS+=("$!")
+    done
+
+    WARMUP_FAILED=0
+    for i in "${!WARMUP_PIDS[@]}"; do
+        if ! wait "${WARMUP_PIDS[$i]}"; then
+            WARMUP_FAILED=1
+            echo "[ERROR] Warmup failed. Log: ${WARMUP_LOGS[$i]}" >&2
+            tail -80 "${WARMUP_LOGS[$i]}" >&2 || true
+        fi
+    done
+
+    if [[ "${WARMUP_FAILED}" -ne 0 ]]; then
+        exit 1
+    fi
+
+    echo "[INFO] Warmup complete."
+    for log_file in "${WARMUP_LOGS[@]}"; do
+        sed 's/^/[INFO]   /' "${log_file}"
     done
 fi

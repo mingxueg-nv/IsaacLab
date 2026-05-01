@@ -80,7 +80,14 @@ python scripts/reinforcement_learning/rlinf/train.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
   --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/orca-dev-test/rlinf/actor/model_state_dict \
-  2>&1 | tee train_from_mingxue_0.6_rlinf_z_image.log
+  2>&1 | tee train_pg_64env_480_640_from_mingxue_0.6_rlinf_z_image.log
+
+python scripts/reinforcement_learning/rlinf/train.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
+  2>&1 | tee train_pg_64env_480_640_from_yun_baseline.log
+
 
 # play
 python scripts/reinforcement_learning/rlinf/play.py \
@@ -103,7 +110,17 @@ python scripts/reinforcement_learning/rlinf/play.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar \
   --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/orca-dev-test/rlinf/actor/model_state_dict \
-  --num_envs 8 \
+  --num_envs 16 \
   --video \
-  2>&1 | tee play_8env_mingxue_0.6_rlinf.log
+  2>&1 | tee play_16env_mingxue_0.6_rlinf.log
+
+python scripts/reinforcement_learning/rlinf/play.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
+  --num_envs 64 \
+  --video \
+  2>&1 | tee play_64env_yun_baseline.log
+
+
 
