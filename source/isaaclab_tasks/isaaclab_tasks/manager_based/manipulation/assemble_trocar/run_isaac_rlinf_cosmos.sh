@@ -86,8 +86,14 @@ python scripts/reinforcement_learning/rlinf/train.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
   --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
-  2>&1 | tee train_pg_64env_480_640_from_yun_baseline.log
+  2>&1 | tee train_pg_64env_480_640_z_image_from_yun_baseline.log
 
+python scripts/reinforcement_learning/rlinf/train.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260501-02:40:56-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0/test_gr00t/checkpoints/global_step_4 \
+  2>&1 | tee train_pg_64env_480_640_z_image_from_yun_baseline_resume_gs4.log
 
 # play
 python scripts/reinforcement_learning/rlinf/play.py \
