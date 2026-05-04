@@ -17,6 +17,7 @@ cluster:
       actor,env,rollout: all
 
 runner:
+  ckpt_path: "/localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260503-22:09:11-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0/test_gr00t/checkpoints/global_step_88/actor/model_state_dict/full_weights.pt"
   task_type: embodied
   logger:
     log_path: "../results"
@@ -104,14 +105,14 @@ env:
     group_size: 1
     reward_coef: 1.0
     use_fixed_reset_state_ids: True
-    max_steps_per_rollout_epoch: 64 # 128 for stage 1, 64 for stage 2,3,4
+    max_steps_per_rollout_epoch: 128
     max_episode_steps: 256
     video_cfg:
       save_video: False
       info_on_video: True
       video_base_dir: ${runner.logger.log_path}/video/train
     init_params:
-      id: "Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0"
+      id: "Isaac-Assemble-Trocar-G129-Dex3-RLinf-v0"
       num_envs: null
       max_episode_steps: ${env.train.max_episode_steps}
       task_description: "install trocar from box"
@@ -175,14 +176,6 @@ env:
       embodiment_tag: "new_embodiment"
       embodiment_tag_id: 31
       data_config_class: "gr00t_config:IsaacLabDataConfig"
-      # Foreground classes preserved by Z-Image background inpainting.
-      # The RLinf IsaacLab wrapper resolves these class labels to per-camera
-      # semantic IDs before forwarding masks to GR00T.
-      z_image_inpaint_preserve_classes:
-        - "robot"
-        - "tray"
-        - "trocar"
-        - "trocar_device"
 
   eval:
     env_type: isaaclab
@@ -201,7 +194,7 @@ env:
       info_on_video: True
       video_base_dir: ${runner.logger.log_path}/video/eval
     init_params:
-      id: "Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0"
+      id: "Isaac-Assemble-Trocar-G129-Dex3-RLinf-v0"
       num_envs: null
       max_episode_steps: ${env.eval.max_episode_steps}
       task_description: "install trocar from box"
@@ -225,7 +218,7 @@ rollout:
   pipeline_stage_num: 1
 
   model:
-    model_path: "/localhome/local-pengfeig/pengfeig/models"
+    model_path: "/localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual"
     precision: ${actor.model.precision}
     obs_converter_type: ${env.train.isaaclab.obs_converter_type}
     embodiment_tag: ${env.train.isaaclab.embodiment_tag}
@@ -247,7 +240,7 @@ actor:
 
   model:
     model_type: "gr00t"
-    model_path: "/localhome/local-pengfeig/pengfeig/models"
+    model_path: "/localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual"
     precision: "bf16"
     trust_remote_code: True
     is_lora: false
@@ -312,28 +305,3 @@ reward:
 
 critic:
   use_critic_model: False
-
-# ---------------------------------------------------------------------------
-# Visual augmentation (sim-to-real)
-# ---------------------------------------------------------------------------
-# Set enabled: true and start one Z-Image service per rollout GPU before training:
-#   cd /localhome/local-pengfeig/pengfeig/IsaacLab/Isaac-GR00T/third_party/VideoX-Fun
-#   CUDA_VISIBLE_DEVICES=0 .venv/bin/python ../../scripts/z_image_service.py --port 5657
-#
-# Ports are assigned round-robin: rollout worker rank % len(ports).
-# Use one port per rollout GPU to avoid ZMQ contention.
-cosmos:
-  enabled: true
-  backend: "z_image"  # "cosmos" or "z_image"
-  control_kind: "depth"  # Z-Image default: depth control, plus background inpainting below
-  inpaint_background: true
-  inpaint_preserve_dilation_px: 0
-  cache_dir: "/tmp/z_image_cache"
-  cache_enabled: false  # false = always call Z-Image service and skip cache read/write
-  host: "localhost"
-  ports: [5657, 5658, 5659, 5660, 5661, 5662, 5663, 5664]
-  probability: 0.1
-  grid_mode: true  # true = tile 3 camera views into 2x2 grid (3x fewer service calls)
-  batch_requests: true  # true = send RLinf [B,T,C,H,W] mini-batches as one Z-Image request
-  debug_dir: "/localhome/local-pengfeig/pengfeig/IsaacLab/outputs/z_image_rlinf_runtime_debug"  # optional directory for input/control/mask/output PNGs
-  debug_max_samples: 1
