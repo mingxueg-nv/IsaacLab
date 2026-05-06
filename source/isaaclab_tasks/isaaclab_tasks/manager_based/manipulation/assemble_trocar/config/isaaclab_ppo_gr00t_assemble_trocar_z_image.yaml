@@ -104,7 +104,7 @@ env:
     group_size: 1
     reward_coef: 1.0
     use_fixed_reset_state_ids: True
-    max_steps_per_rollout_epoch: 64 # 128 for stage 1, 64 for stage 2,3,4
+    max_steps_per_rollout_epoch: 64 # 128 for stage 1,2; 64 for stage 3,4
     max_episode_steps: 256
     video_cfg:
       save_video: False
@@ -323,7 +323,7 @@ critic:
 # Ports are assigned round-robin: rollout worker rank % len(ports).
 # Use one port per rollout GPU to avoid ZMQ contention.
 cosmos:
-  enabled: true
+  enabled: True
   backend: "z_image"  # "cosmos" or "z_image"
   control_kind: "depth"  # Z-Image default: depth control, plus background inpainting below
   inpaint_background: true

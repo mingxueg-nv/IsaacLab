@@ -83,20 +83,37 @@ python scripts/reinforcement_learning/rlinf/train.py \
   2>&1 | tee train_pg_64env_480_640_z_image_from_yun_baseline.log
 
 # stage 1 resume
+# python scripts/reinforcement_learning/rlinf/train.py \
+#   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+#   --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
+#   --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
+#   --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260501-15:10:53-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0/test_gr00t/checkpoints/global_step_16 \
+#   2>&1 | tee train_pg_64env_480_640_z_image_from_yun_baseline_resume_gs16.log
+
 python scripts/reinforcement_learning/rlinf/train.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
   --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
-  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260501-15:10:53-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0/test_gr00t/checkpoints/global_step_16 \
-  2>&1 | tee train_pg_64env_480_640_z_image_from_yun_baseline_resume_gs16.log
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260502-20:54:43-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage1/test_gr00t/checkpoints/global_step_40 \
+  2>&1 | tee train_pg_64env_480_640_z_image_from_yun_baseline_resume_debug.log
 
 # stage 2 resume
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/ray_pengfeig_stage2_gs48_2 \
 python scripts/reinforcement_learning/rlinf/train.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
   --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
-  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260502-20:54:43-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0/test_gr00t/checkpoints/global_step_40 \
-  2>&1 | tee train_pg_stage2_64env_480_640_z_image_from_yun_baseline_resume_gs40.log
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260502-20:54:43-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage1/test_gr00t/checkpoints/global_step_48 \
+  2>&1 | tee train_pg_stage2_retrain_step64_64env_480_640_z_image_0.1_resume_gs48.log
+
+# stage 2 no cosmos
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/ray_pengfeig_stage2_no_cosmos \
+python scripts/reinforcement_learning/rlinf/train.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260502-20:54:43-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage1/test_gr00t/checkpoints/global_step_48 \
+  2>&1 | tee train_pg_stage2_no_cosmos_step64_64env_480_640_resume_gs48.log
 
 # stage 3 resume
 python scripts/reinforcement_learning/rlinf/train.py \

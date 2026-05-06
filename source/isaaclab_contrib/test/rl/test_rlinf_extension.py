@@ -442,6 +442,29 @@ class TestTaskRegistration:
             assert issubclass(env_cls, base)
 
 
+class TestTaskSuccessMetrics:
+    """Tests for task-success metric propagation."""
+
+    def test_record_metrics_adds_task_success_at_stage(self) -> None:
+        """The IsaacLab wrapper should preserve task_success as an episode metric."""
+        env_cls = ext._create_generic_env_wrapper("Isaac-Test-Task-v0")
+        env = object.__new__(env_cls)
+        env.returns = torch.zeros(3)
+        env.success_once = torch.zeros(3, dtype=torch.bool)
+        env.elapsed_steps = torch.ones(3)
+
+        infos = {"task_success_at_stage": torch.tensor([False, True, True])}
+        out = env._record_metrics(
+            step_reward=torch.tensor([0.0, 1.0, 0.5]),
+            terminations=torch.tensor([False, True, True]),
+            infos=infos,
+        )
+
+        assert out["episode"]["task_success_at_stage"].tolist() == [False, True, True]
+        assert out["episode"]["success_once"].tolist() == [False, True, True]
+        assert out["episode"]["return"].tolist() == [0.0, 1.0, 0.5]
+
+
 # ---------------------------------------------------------------------------
 # Tests: converter registration
 # ---------------------------------------------------------------------------

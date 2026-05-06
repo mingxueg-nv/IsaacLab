@@ -613,6 +613,57 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                 self._isaaclab_cfg = None
             super().__init__(cfg, num_envs, seed_offset, total_num_processes, worker_info)
 
+        def _record_metrics(self, step_reward: torch.Tensor, terminations: torch.Tensor, infos: dict) -> dict:
+            """Record RLinf episode metrics, including IsaacLab task-success state."""
+            episode_info = {}
+            infos = infos if isinstance(infos, dict) else {}
+            self.returns += step_reward
+            self.success_once = self.success_once | (step_reward > 0)
+
+            task_success_at_stage = infos.get("task_success_at_stage")
+            if isinstance(task_success_at_stage, torch.Tensor):
+                episode_info["task_success_at_stage"] = task_success_at_stage.bool().clone()
+
+            episode_info["success_once"] = self.success_once.clone()
+            episode_info["return"] = self.returns.clone()
+            episode_info["episode_len"] = self.elapsed_steps.clone()
+            episode_info["reward"] = episode_info["return"] / episode_info["episode_len"]
+            infos["episode"] = episode_info
+            return infos
+
+        def step(self, actions=None, auto_reset=True):
+            """Step the IsaacLab env while preserving extras needed for metrics."""
+            obs, step_reward, terminations, truncations, infos = self.env.step(actions)
+
+            step_reward = step_reward.clone()
+            terminations = terminations.clone()
+            truncations = truncations.clone()
+
+            obs = self._wrap_obs(obs)
+
+            self._elapsed_steps += 1
+
+            truncations = (self.elapsed_steps >= self.cfg.max_episode_steps) | truncations
+
+            dones = terminations | truncations
+
+            infos = self._record_metrics(step_reward, terminations, infos)
+            if self.ignore_terminations:
+                infos["episode"]["success_at_end"] = terminations
+                terminations[:] = False
+
+            _auto_reset = auto_reset and self.auto_reset
+            if dones.any() and _auto_reset:
+                obs, infos = self._handle_auto_reset(dones, obs, infos)
+
+            return (
+                obs,
+                step_reward,
+                terminations,
+                truncations,
+                infos,
+            )
+
         def _make_env_function(self) -> collections.abc.Callable:
             """Create the environment factory function.
 
@@ -733,6 +784,14 @@ def _create_generic_env_wrapper(task_id: str) -> type:
                     obs["camera_semantic_segmentation"] = out_group
                     return obs
 
+                def _get_task_success_at_stage() -> torch.Tensor | None:
+                    termination_manager = getattr(env, "termination_manager", None)
+                    if termination_manager is None:
+                        return None
+                    if "task_success" not in getattr(termination_manager, "active_terms", ()):
+                        return None
+                    return termination_manager.get_term("task_success").clone()
+
                 _original_reset = env.reset
                 _original_step = env.step
 
@@ -754,6 +813,10 @@ def _create_generic_env_wrapper(task_id: str) -> type:
 
                 def _patched_step(*args, **kwargs):
                     obs, reward, terminated, truncated, extras = _original_step(*args, **kwargs)
+                    extras = dict(extras) if isinstance(extras, dict) else {}
+                    task_success_at_stage = _get_task_success_at_stage()
+                    if task_success_at_stage is not None:
+                        extras["task_success_at_stage"] = task_success_at_stage
                     obs = _replace_semantic_ids_with_z_image_foreground_masks(obs)
                     env.obs_buf = obs
                     return obs, reward, terminated, truncated, extras

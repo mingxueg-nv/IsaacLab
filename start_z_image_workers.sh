@@ -50,7 +50,7 @@
 #   ./start_z_image_workers.sh --num-gpus 1 -- --sigmas 1.0 0.65
 #
 # To stop all workers:
-#   kill $(cat /tmp/z_image_worker_pids.txt)
+#   pkill -TERM -f '[z]_image_service.py'
 
 set -euo pipefail
 
@@ -269,7 +269,7 @@ done
 
 echo ""
 echo "[INFO] All ${NUM_GPUS} worker(s) launched. PIDs saved to ${PID_FILE}"
-echo "[INFO] To stop all workers: kill \$(cat ${PID_FILE})"
+echo "[INFO] To stop all workers: pkill -TERM -f '[z]_image_service.py'"
 echo ""
 
 # ---------------------------------------------------------------------------
