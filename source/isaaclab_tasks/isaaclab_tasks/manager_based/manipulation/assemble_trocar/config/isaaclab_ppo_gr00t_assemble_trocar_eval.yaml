@@ -17,7 +17,7 @@ cluster:
       actor,env,rollout: all
 
 runner:
-  ckpt_path: "/localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260503-22:09:11-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0/test_gr00t/checkpoints/global_step_88/actor/model_state_dict/full_weights.pt"
+  ckpt_path: "/localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260507-15:49:38-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage3-resume104/test_gr00t/checkpoints/global_step_128/actor/model_state_dict/full_weights.pt"
   task_type: embodied
   logger:
     log_path: "../results"
@@ -181,7 +181,7 @@ env:
     env_type: isaaclab
     total_num_envs: 64
     auto_reset: True
-    ignore_terminations: True
+    ignore_terminations: False
     use_rel_reward: True
     seed: 0
     group_size: 1
@@ -218,7 +218,7 @@ rollout:
   pipeline_stage_num: 1
 
   model:
-    model_path: "/localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual"
+    model_path: "/localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps_new_trocar_460samples"
     precision: ${actor.model.precision}
     obs_converter_type: ${env.train.isaaclab.obs_converter_type}
     embodiment_tag: ${env.train.isaaclab.embodiment_tag}
@@ -240,7 +240,7 @@ actor:
 
   model:
     model_type: "gr00t"
-    model_path: "/localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual"
+    model_path: "/localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps_new_trocar_460samples"
     precision: "bf16"
     trust_remote_code: True
     is_lora: false

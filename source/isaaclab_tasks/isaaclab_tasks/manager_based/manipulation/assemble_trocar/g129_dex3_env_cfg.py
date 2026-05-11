@@ -129,7 +129,8 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
     trocar_1 = RigidObjectCfg(
         prim_path="/World/envs/env_.*/trocar_1",
         spawn=UsdFileCfg(
-            usd_path=f"{LOCAL_USD_ROOT}/Assets/Trocar002/Trocar004_test.usd",
+            # usd_path=f"{LOCAL_USD_ROOT}/Assets/Trocar002/Trocar004_test.usd",
+            usd_path=f"{LOCAL_USD_ROOT}/Assets/Trocar002/Trocar004_test_nodeform.usd",
             collision_props=sim_utils.CollisionPropertiesCfg(
                 collision_enabled=True,
                 contact_offset=0.001,
@@ -257,7 +258,7 @@ class TerminationsCfg:
         time_out=False,  # This is a success termination, not a failure
         params={
             "print_log": False,
-            "success_stage": 2, # 1 for starting training, 4 for playing evaluation
+            "success_stage": 4, # 1 for starting training, 4 for playing evaluation
         },
     )
     object_drop = DoneTerm(

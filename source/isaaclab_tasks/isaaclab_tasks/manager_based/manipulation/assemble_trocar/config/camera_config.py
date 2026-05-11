@@ -49,8 +49,8 @@ class CameraBaseCfg:
         cls,
         prim_path: str = "/World/envs/env_.*/Robot/d435_link/front_cam",
         update_period: float = 0.02,
-        height: int = 480,
-        width: int = 640,
+        height: int = 240, # 480
+        width: int = 320, # 640,
         focal_length: float = 7.6,
         focus_distance: float = 400.0,
         horizontal_aperture: float = 20.0,
@@ -128,8 +128,8 @@ class CameraPresets:
         """left wrist camera configuration"""
         params = {
             "prim_path": "/World/envs/env_.*/Robot/left_hand_camera_base_link/left_wrist_camera",
-            "height": 480,
-            "width": 640,
+            "height": 240, # 480
+            "width": 320, # 640,
             "update_period": 0.02,
             "data_types": ["rgb"],
             "focal_length": 12.0,
@@ -147,8 +147,8 @@ class CameraPresets:
         """right wrist camera configuration"""
         params = {
             "prim_path": "/World/envs/env_.*/Robot/right_hand_camera_base_link/right_wrist_camera",
-            "height": 480,
-            "width": 640,
+            "height": 240, # 480
+            "width": 320, # 640,
             "update_period": 0.02,
             "data_types": ["rgb"],
             "focal_length": 12.0,
