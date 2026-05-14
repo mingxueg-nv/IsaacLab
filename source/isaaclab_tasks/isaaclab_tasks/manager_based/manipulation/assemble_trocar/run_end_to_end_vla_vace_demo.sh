@@ -8,18 +8,25 @@ SCOPE_MODELS_DIR="${SCOPE_MODELS_DIR:-/localhome/local-pengfeig/pengfeig/models/
 OUT_DIR="${OUT_DIR:-/tmp/vla_vace_live_demo}"
 NUM_FRAMES="${NUM_FRAMES:-48}"
 FPS="${FPS:-12}"
-CAMERA_WIDTH="${CAMERA_WIDTH:-640}"
-CAMERA_HEIGHT="${CAMERA_HEIGHT:-480}"
-VACE_WIDTH="${VACE_WIDTH:-$CAMERA_WIDTH}"
-VACE_HEIGHT="${VACE_HEIGHT:-$CAMERA_HEIGHT}"
-VACE_CHUNKS="${VACE_CHUNKS:-4}"
+CAMERA_WIDTH="${CAMERA_WIDTH:-320}"
+CAMERA_HEIGHT="${CAMERA_HEIGHT:-240}"
+VACE_WIDTH="${VACE_WIDTH:-512}"
+VACE_HEIGHT="${VACE_HEIGHT:-384}"
 FRAMES_PER_CHUNK="${FRAMES_PER_CHUNK:-12}"
 OVERLAP_FRAMES="${OVERLAP_FRAMES:-0}"
+COMMIT_FRAMES_PER_CHUNK="${COMMIT_FRAMES_PER_CHUNK:-6}"
+if [[ -z "${VACE_CHUNKS:-}" ]]; then
+  if [[ "$COMMIT_FRAMES_PER_CHUNK" -gt 0 ]]; then
+    VACE_CHUNKS=$(( (NUM_FRAMES + COMMIT_FRAMES_PER_CHUNK - 1) / COMMIT_FRAMES_PER_CHUNK ))
+  else
+    VACE_CHUNKS=$(( (NUM_FRAMES + FRAMES_PER_CHUNK - OVERLAP_FRAMES - 1) / (FRAMES_PER_CHUNK - OVERLAP_FRAMES) ))
+  fi
+fi
 MASK_DILATE_PX="${MASK_DILATE_PX:-0}"
 MASK_FILL_HOLES="${MASK_FILL_HOLES:-0}"
 MASK_CLOSE_PX="${MASK_CLOSE_PX:-5}"
 MASK_TEMPORAL_RADIUS="${MASK_TEMPORAL_RADIUS:-1}"
-MASK_GUARD_PX="${MASK_GUARD_PX:-2}"
+MASK_GUARD_PX="${MASK_GUARD_PX:-4}"
 VACE_COMPOSITE_MODE="${VACE_COMPOSITE_MODE:-upperroom}"
 UPPERROOM_Y_CUT="${UPPERROOM_Y_CUT:-155}"
 UPPERROOM_Y_FADE="${UPPERROOM_Y_FADE:-45}"
@@ -28,6 +35,12 @@ UPPERROOM_DISTANCE_END="${UPPERROOM_DISTANCE_END:-20}"
 RENDER_ANTIALIASING="${RENDER_ANTIALIASING:-DLAA}"
 VACE_CONTEXT_SCALE="${VACE_CONTEXT_SCALE:-1.5}"
 VACE_WARMUP_CHUNKS="${VACE_WARMUP_CHUNKS:-1}"
+VACE_DENOISING_STEPS="${VACE_DENOISING_STEPS:-1000,500}"
+FIXED_DELAY_CHUNKS="${FIXED_DELAY_CHUNKS:-2}"
+LIVE_FRAME_PERIOD_MS="${LIVE_FRAME_PERIOD_MS:-0}"
+COMPOSITE_ALPHA_ERODE_PX="${COMPOSITE_ALPHA_ERODE_PX:-1}"
+COMPOSITE_ALPHA_BLUR_PX="${COMPOSITE_ALPHA_BLUR_PX:-7}"
+COMPOSITE_ALPHA_TEMPORAL_RADIUS="${COMPOSITE_ALPHA_TEMPORAL_RADIUS:-1}"
 VACE_PROMPT="${VACE_PROMPT:-Single camera view. Render a realistic sterile operating room background with clean walls, ceiling lights, surgical lamp positions, monitor stands, cabinets, IV poles, drapes, floor material, reflections, background equipment behind the workspace, moderate clutter, and neutral clinical illumination. Keep the background physically consistent with camera perspective and depth. The masked region must contain only background surfaces and distant room equipment, with no new foreground subject. Existing robot hands, black grippers, surgical tray, trocar tools, and task objects are foreground copied from the source video; do not generate, duplicate, or extend them in the masked background.}"
 
 ASSEMBLE_DIR="$ISAACLAB_ROOT/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar"
@@ -66,6 +79,18 @@ cd "$ISAACLAB_ROOT"
   --render_antialiasing "$RENDER_ANTIALIASING" \
   --render_translucency off
 
+if [[ "$LIVE_FRAME_PERIOD_MS" == "0" || "$LIVE_FRAME_PERIOD_MS" == "0.0" ]]; then
+  LIVE_FRAME_PERIOD_MS="$(
+    python - <<PY
+import json
+from pathlib import Path
+metrics = json.loads(Path("$ISAAC_OUT/metrics.json").read_text())
+print(metrics.get("total_frame_ms", {}).get("median_ms", 0.0))
+PY
+  )"
+fi
+echo "Using LIVE_FRAME_PERIOD_MS=${LIVE_FRAME_PERIOD_MS} for fixed-delay metrics."
+
 cd "$SCOPE_ROOT"
 python -m scope.core.pipelines.longlive.isaac_vace_background_inpaint_demo \
   --input_video "$ISAAC_OUT/front_camera_rgb.mp4" \
@@ -75,10 +100,12 @@ python -m scope.core.pipelines.longlive.isaac_vace_background_inpaint_demo \
   --num_chunks "$VACE_CHUNKS" \
   --frames_per_chunk "$FRAMES_PER_CHUNK" \
   --overlap_frames "$OVERLAP_FRAMES" \
+  --commit_frames_per_chunk "$COMMIT_FRAMES_PER_CHUNK" \
   --height "$VACE_HEIGHT" \
   --width "$VACE_WIDTH" \
   --fps "$FPS" \
   --vace_context_scale "$VACE_CONTEXT_SCALE" \
+  --denoising_steps "$VACE_DENOISING_STEPS" \
   --mask_fill_holes "$MASK_FILL_HOLES" \
   --mask_close_px "$MASK_CLOSE_PX" \
   --mask_temporal_radius "$MASK_TEMPORAL_RADIUS" \
@@ -89,6 +116,11 @@ python -m scope.core.pipelines.longlive.isaac_vace_background_inpaint_demo \
   --upperroom_distance_start "$UPPERROOM_DISTANCE_START" \
   --upperroom_distance_end "$UPPERROOM_DISTANCE_END" \
   --warmup_chunks "$VACE_WARMUP_CHUNKS" \
+  --fixed_delay_chunks "$FIXED_DELAY_CHUNKS" \
+  --live_frame_period_ms "$LIVE_FRAME_PERIOD_MS" \
+  --composite_alpha_erode_px "$COMPOSITE_ALPHA_ERODE_PX" \
+  --composite_alpha_blur_px "$COMPOSITE_ALPHA_BLUR_PX" \
+  --composite_alpha_temporal_radius "$COMPOSITE_ALPHA_TEMPORAL_RADIUS" \
   --prompt "$VACE_PROMPT"
 
 ffmpeg -y \
