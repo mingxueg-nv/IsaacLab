@@ -140,54 +140,71 @@ python scripts/reinforcement_learning/rlinf/train.py \
   2>&1 | tee train_pg_stage3_step64_512env_240_320_z_image_0.1_from_gs104.log
 
 # stage 4 resume
-RAY_ADDRESS=local RAY_TMPDIR=/tmp/ray_pengfeig_s4 \
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/ray_pengfeig_s4_2 \
 python scripts/reinforcement_learning/rlinf/train.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
   --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps_new_trocar_460samples \
-  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260507-15:49:38-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage3-resume104/test_gr00t/checkpoints/global_step_128 \
-  2>&1 | tee train_pg_stage4_step64_512env_240_320_z_image_0.1_from_gs128.log
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260508-15:49:12-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage4-resume128/test_gr00t/checkpoints/global_step_216 \
+  2>&1 | tee train_pg_stage4_step64_512env_240_320_z_image_0.1_from_gs216.log
 
 # play
-RAY_ADDRESS=local RAY_TMPDIR=/tmp/play_1 \
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/play_default \
 python scripts/reinforcement_learning/rlinf/play.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar_eval \
-  --num_envs 64 \
+  --num_envs 128 \
   --video \
-  2>&1 | tee play_64env_global_step_128_nodeformable.log
+  2>&1 | tee play_128env_global_step_216_nodeformable_default.log
 
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/play_orca2 \
+ASSEMBLE_TROCAR_SCENE_VARIANT=orca \
 python scripts/reinforcement_learning/rlinf/play.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
-  --config_name isaaclab_ppo_gr00t_assemble_trocar \
-  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps \
-  --num_envs 8 \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_eval \
+  --num_envs 128 \
   --video \
-  2>&1 | tee play_8env_sim6_gr00t_n15_50ksteps.log
+  2>&1 | tee play_128env_global_step_216_nodeformable_orca2.log
 
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/play_factory1 \
+ASSEMBLE_TROCAR_SCENE_VARIANT=factory \
 python scripts/reinforcement_learning/rlinf/play.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
-  --config_name isaaclab_ppo_gr00t_assemble_trocar_yiheng \
-  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps \
-  --num_envs 8 \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_eval \
+  --num_envs 128 \
   --video \
-  2>&1 | tee play_8env_chunk4_sim6_gr00t_n15_50ksteps.log
+  2>&1 | tee play_128env_global_step_216_nodeformable_factory1.log
 
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/play_surgical1 \
+ASSEMBLE_TROCAR_SCENE_VARIANT=surgical \
+python scripts/reinforcement_learning/rlinf/play.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_eval \
+  --num_envs 128 \
+  --video \
+  2>&1 | tee play_128env_global_step_216_nodeformable_surgical1.log
+
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/play_surgical1 \
+ASSEMBLE_TROCAR_SCENE_VARIANT=surgical \
+python scripts/reinforcement_learning/rlinf/play.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_eval \
+  --num_envs 16 \
+  --video \
+  2>&1 | tee play_16env_debug.log
+
+
+
+
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/mx_original \
+ASSEMBLE_TROCAR_SCENE_VARIANT=default \
 python scripts/reinforcement_learning/rlinf/play.py \
   --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
   --config_name isaaclab_ppo_gr00t_assemble_trocar \
   --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/orca-dev-test/rlinf/actor/model_state_dict \
-  --num_envs 16 \
+  --num_envs 128 \
   --video \
-  2>&1 | tee play_16env_mingxue_0.6_rlinf.log
-
-python scripts/reinforcement_learning/rlinf/play.py \
-  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
-  --config_name isaaclab_ppo_gr00t_assemble_trocar \
-  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/g1_install_trocar_sim_box_v3_60_train_bs32_1_gpus_cos_30k_tune_visual \
-  --num_envs 64 \
-  --video \
-  2>&1 | tee play_64env_yun_baseline.log
+  2>&1 | tee play_128env_450steps_mingxue_rlinf_default.log
 
 
 

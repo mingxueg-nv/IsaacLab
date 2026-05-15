@@ -99,34 +99,58 @@ offset_dict = {
 
 HEALTHCARE_S3 = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/Healthcare/0.5.0/132c82d"
 USD_ROOT = f"{HEALTHCARE_S3}/Props/LightWheel"
+OMNIVERSE_PROPS_ROOT = "omniverse://isaac-dev.ov.nvidia.com/Library/IsaacHealthcare/0.5.0/Props"
 REPO_ROOT = Path(__file__).resolve().parents[6]
 LOCAL_USD_ROOT = os.environ.get(
     "ASSEMBLE_TROCAR_USD_ROOT",
     str(REPO_ROOT / "assets" / "assemble_trocar"),
 )
-
-
-@configclass
-class AssembleTrocarSceneCfg(InteractiveSceneCfg):
-    """Scene configuration for the assemble_trocar task (robot + objects + lights)."""
-
-    # humanoid robot configuration
-    robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex3_base_fix(
-        init_pos=(-1.84919, 1.94, 0.81168), init_rot=(0.0, 0.0, 0.0, 1.0)
-    )
-    # add camera configuration
-    front_camera = CameraPresets.g1_front_camera()
-    left_wrist_camera = CameraPresets.left_dex3_wrist_camera()
-    right_wrist_camera = CameraPresets.right_dex3_wrist_camera()
-
-    scene = AssetBaseCfg(
-        prim_path="/World/envs/env_.*/Scene",
-        spawn=UsdFileCfg(
-            usd_path=f"{USD_ROOT}/scene03.usd",
-        ),
+SCENE_VARIANT = os.environ.get("ASSEMBLE_TROCAR_SCENE_VARIANT", "default").strip().lower().replace("-", "_")
+SCENE_VARIANT_ALIASES = {
+    "": "default",
+    "default": "default",
+    "scene03": "default",
+    "lightwheel": "default",
+    "factory": "factory",
+    "orca": "orca",
+    "orca_scene": "orca",
+    "surgical": "surgical_room",
+    "surgical_room": "surgical_room",
+}
+SCENE_VARIANT = SCENE_VARIANT_ALIASES.get(SCENE_VARIANT, SCENE_VARIANT)
+SUPPORTED_SCENE_VARIANTS = tuple(sorted(set(SCENE_VARIANT_ALIASES.values())))
+if SCENE_VARIANT not in SUPPORTED_SCENE_VARIANTS:
+    raise ValueError(
+        f"Unsupported ASSEMBLE_TROCAR_SCENE_VARIANT={SCENE_VARIANT!r}. "
+        f"Expected one of {SUPPORTED_SCENE_VARIANTS}."
     )
 
-    trocar_1 = RigidObjectCfg(
+SCENE_VARIANT_ENV_SPACING = {
+    "default": 6.0,
+    # Match the i4h benchmark background commits. These room-scale USDs need a
+    # large spacing so their background/task-table geometry does not leak across
+    # tiled vectorized renders.
+    "factory": 50.0,
+    "orca": 50.0,
+    "surgical_room": 50.0,
+}
+SCENE_ENV_SPACING = float(
+    os.environ.get("ASSEMBLE_TROCAR_ENV_SPACING", SCENE_VARIANT_ENV_SPACING[SCENE_VARIANT])
+)
+SCENE_REPLICATE_PHYSICS = os.environ.get(
+    "ASSEMBLE_TROCAR_REPLICATE_PHYSICS",
+    "true" if SCENE_VARIANT == "default" else "false",
+).strip().lower() in {"1", "true", "yes", "on"}
+# SCENE_REPLICATE_PHYSICS = False
+
+
+def _wxyz_to_xyzw(rot: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """Convert benchmark scene rotations from WXYZ into IsaacLab 6 XYZW."""
+    return (rot[1], rot[2], rot[3], rot[0])
+
+
+def _make_trocar_1_cfg() -> RigidObjectCfg:
+    return RigidObjectCfg(
         prim_path="/World/envs/env_.*/trocar_1",
         spawn=UsdFileCfg(
             # usd_path=f"{LOCAL_USD_ROOT}/Assets/Trocar002/Trocar004_test.usd",
@@ -143,7 +167,9 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    trocar_2 = RigidObjectCfg(
+
+def _make_trocar_2_cfg() -> RigidObjectCfg:
+    return RigidObjectCfg(
         prim_path="/World/envs/env_.*/trocar_2",
         spawn=UsdFileCfg(
             usd_path=(
@@ -160,23 +186,182 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
             rot=[-0.71475, -0.000243, 0.05853, 0.69692], pos=[-1.50635, 1.90997, 0.8631]
         ),
     )
-    tray = ArticulationCfg(
+
+
+def _make_tray_cfg() -> ArticulationCfg:
+    return ArticulationCfg(
         prim_path="/World/envs/env_.*/surgical_tray",
         spawn=UsdFileCfg(
             usd_path=f"{USD_ROOT}/Assets/SurgicalTray001/SurgicalTray001.usd",
+            scale=(1.0, 1.0, 1.0),
         ),
-        init_state=ArticulationCfg.InitialStateCfg(pos=[-1.54919, 2.03365, 0.84554], rot=[0.0, 0.0, -0.70711, 0.70711]),
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=[-1.54919, 2.03365, 0.84554], rot=[0.0, 0.0, -0.70711, 0.70711]
+        ),
         actuators={},  # Empty dict for passive articulation (no motors)
     )
 
-    # Lights
-    light = AssetBaseCfg(
+
+def _make_cart001_cfg() -> AssetBaseCfg:
+    return AssetBaseCfg(
+        prim_path="/World/envs/env_.*/cart001",
+        spawn=UsdFileCfg(
+            usd_path=f"{OMNIVERSE_PROPS_ROOT}/LightWheel/Assets/Cart001/Cart001.usd",
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(-1.48242, 2.03195, 0.00279),
+            rot=_wxyz_to_xyzw((1.0, 0.0, 0.0, 0.0)),
+        ),
+    )
+
+
+def _make_instrument_trolley002_cfg() -> AssetBaseCfg:
+    return AssetBaseCfg(
+        prim_path="/World/envs/env_.*/instrument_trolley002",
+        spawn=UsdFileCfg(
+            usd_path=f"{OMNIVERSE_PROPS_ROOT}/LightWheel/Assets/InstrumentTrolley001/InstrumentTrolley002.usd",
+            scale=(1.05, 1.05, 1.05),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(-1.52131, 1.4862, 0.0),
+            rot=_wxyz_to_xyzw((0.0, 0.0, 0.0, 1.0)),
+        ),
+    )
+
+
+def _make_default_light_cfg() -> AssetBaseCfg:
+    return AssetBaseCfg(
         prim_path="/World/light",
         spawn=sim_utils.DomeLightCfg(
             color=(0.75, 0.75, 0.75),
             intensity=1000.0,
         ),
     )
+
+
+def _make_surgical_room_light_cfg() -> AssetBaseCfg:
+    return AssetBaseCfg(
+        prim_path="/World/light",
+        spawn=sim_utils.DomeLightCfg(
+            color=(0.75, 0.75, 0.75),
+            intensity=1000.0,
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(-3.8, 5.3, 2.0),
+            rot=_wxyz_to_xyzw((1.0, 0.0, 0.0, 0.0)),
+        ),
+    )
+
+
+def _make_surgical_room_tray_fill_light_cfg() -> AssetBaseCfg:
+    return AssetBaseCfg(
+        prim_path="/World/envs/env_.*/surgical_room_tray_fill_light",
+        spawn=sim_utils.DiskLightCfg(
+            color=(0.78, 0.90, 1.0),
+            intensity=250.0,
+            radius=1.35,
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(-1.55, 1.86, 1.55),
+            rot=_wxyz_to_xyzw((1.0, 0.0, 0.0, 0.0)),
+        ),
+    )
+
+@configclass
+class AssembleTrocarSceneBaseCfg(InteractiveSceneCfg):
+    """Shared scene configuration for the assemble_trocar task."""
+
+    # humanoid robot configuration
+    robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex3_base_fix(
+        init_pos=(-1.84919, 1.94, 0.81168), init_rot=(0.0, 0.0, 0.0, 1.0)
+    )
+    # add camera configuration
+    front_camera = CameraPresets.g1_front_camera()
+    left_wrist_camera = CameraPresets.left_dex3_wrist_camera()
+    right_wrist_camera = CameraPresets.right_dex3_wrist_camera()
+
+    trocar_1 = _make_trocar_1_cfg()
+    trocar_2 = _make_trocar_2_cfg()
+    tray = _make_tray_cfg()
+
+
+@configclass
+class AssembleTrocarSceneCfg(AssembleTrocarSceneBaseCfg):
+    """Default LightWheel scene03 background used by existing experiments."""
+
+    scene = AssetBaseCfg(
+        prim_path="/World/envs/env_.*/Scene",
+        spawn=UsdFileCfg(
+            usd_path=f"{USD_ROOT}/scene03.usd",
+        ),
+    )
+    light = _make_default_light_cfg()
+
+
+@configclass
+class AssembleTrocarFactorySceneCfg(AssembleTrocarSceneBaseCfg):
+    """Factory background from i4h benchmark commit e67b3b8."""
+
+    scene = AssetBaseCfg(
+        prim_path="/World/envs/env_.*/Scene",
+        spawn=UsdFileCfg(
+            usd_path=f"{OMNIVERSE_PROPS_ROOT}/OrcaScenes/Scene1MX2/rlinf_scenes/factory.usd",
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(1.0, 3.0, 0.0),
+            rot=_wxyz_to_xyzw((0.0, 0.0, 0.0, 1.0)),
+        ),
+    )
+    cart001 = _make_cart001_cfg()
+    instrument_trolley002 = _make_instrument_trolley002_cfg()
+
+
+@configclass
+class AssembleTrocarOrcaSceneCfg(AssembleTrocarSceneBaseCfg):
+    """Orca room background from i4h benchmark commit 98b6e4a."""
+
+    scene = AssetBaseCfg(
+        prim_path="/World/envs/env_.*/Scene",
+        spawn=UsdFileCfg(
+            usd_path=f"{OMNIVERSE_PROPS_ROOT}/OrcaScenes/Scene1MX2/main_new_light.usd",
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(4.0, -5.5, 0.0),
+            rot=_wxyz_to_xyzw((1.0, 0.0, 0.0, 0.0)),
+        ),
+    )
+    cart001 = _make_cart001_cfg()
+    instrument_trolley002 = _make_instrument_trolley002_cfg()
+
+
+@configclass
+class AssembleTrocarSurgicalRoomSceneCfg(AssembleTrocarSceneBaseCfg):
+    """Surgical-room background from i4h benchmark commit 03480cf."""
+
+    scene = AssetBaseCfg(
+        prim_path="/World/envs/env_.*/Scene",
+        spawn=UsdFileCfg(
+            usd_path=f"{OMNIVERSE_PROPS_ROOT}/OrcaScenes/Scene1MX2/push-cart-OR-scenes/main.usd",
+            scale=(0.008, 0.008, 0.008),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(-3.8, 5.3, 0.0),
+            rot=_wxyz_to_xyzw((0.70710678, 0.0, 0.0, -0.70710678)),
+        ),
+    )
+    cart001 = _make_cart001_cfg()
+    instrument_trolley002 = _make_instrument_trolley002_cfg()
+    light = _make_surgical_room_light_cfg()
+    tray_fill_light = _make_surgical_room_tray_fill_light_cfg()
+
+
+SCENE_VARIANT_TO_CFG = {
+    "default": AssembleTrocarSceneCfg,
+    "factory": AssembleTrocarFactorySceneCfg,
+    "orca": AssembleTrocarOrcaSceneCfg,
+    "surgical_room": AssembleTrocarSurgicalRoomSceneCfg,
+}
+ACTIVE_SCENE_CFG_CLS = SCENE_VARIANT_TO_CFG[SCENE_VARIANT]
 
 
 ##
@@ -377,10 +562,10 @@ class G1AssembleTrocarEnvCfg(ManagerBasedRLEnvCfg):
     """
 
     # scene settings
-    scene: AssembleTrocarSceneCfg = AssembleTrocarSceneCfg(
+    scene: InteractiveSceneCfg = ACTIVE_SCENE_CFG_CLS(
         num_envs=1,
-        env_spacing=6.0,
-        replicate_physics=True,
+        env_spacing=SCENE_ENV_SPACING,
+        replicate_physics=SCENE_REPLICATE_PHYSICS,
     )
     # viewer settings
     viewer: ViewerCfg = ViewerCfg(
@@ -493,7 +678,7 @@ def _spawn_scene_usd_with_subprim_labels(prim_path, cfg, translation=None, orien
 
 
 @configclass
-class AssembleTrocarSceneMultiModalCfg(AssembleTrocarSceneCfg):
+class AssembleTrocarSceneMultiModalCfg(ACTIVE_SCENE_CFG_CLS):
     """Scene cfg whose cameras emit RGB, depth, and segmentation.
 
     Also tags the task-relevant props with semantic/instance labels so the
@@ -608,7 +793,7 @@ class G1AssembleTrocarMultiModalEnvCfg(G1AssembleTrocarEnvCfg):
 
     scene: AssembleTrocarSceneMultiModalCfg = AssembleTrocarSceneMultiModalCfg(
         num_envs=1,
-        env_spacing=6.0,
-        replicate_physics=True,
+        env_spacing=SCENE_ENV_SPACING,
+        replicate_physics=SCENE_REPLICATE_PHYSICS,
     )
     observations: ObservationsMultiModalCfg = ObservationsMultiModalCfg()

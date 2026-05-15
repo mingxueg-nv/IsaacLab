@@ -178,16 +178,18 @@ env:
 
   eval:
     env_type: isaaclab
-    total_num_envs: 64
-    auto_reset: True
-    ignore_terminations: True
+    total_num_envs: 128
+    auto_reset: False
+    ignore_terminations: False
+    one_episode_per_env: True
+    freeze_done_envs: True
     use_rel_reward: True
     seed: 0
     group_size: 1
     reward_coef: 1.0
     use_fixed_reset_state_ids: True
-    max_steps_per_rollout_epoch: 256
-    max_episode_steps: 256
+    max_steps_per_rollout_epoch: 450
+    max_episode_steps: 450
     video_cfg:
       save_video: True
       info_on_video: True

@@ -147,6 +147,7 @@ def main():
     print(f"  Videos: {cfg.env.eval.video_cfg.save_video}")
     if cfg.env.eval.video_cfg.save_video:
         print(f"  Video dir: {cfg.env.eval.video_cfg.video_base_dir}")
+    print(f"  One episode per env: {cfg.env.eval.get('one_episode_per_env', False)}")
     print(f"  Log dir: {log_dir}")
     print("=" * 60 + "\n")
 
@@ -162,7 +163,15 @@ def main():
 
     # Create env worker
     env_placement = component_placement.get_strategy("env")
-    env_group = EnvWorker.create_group(cfg).launch(cluster, name=cfg.env.group_name, placement_strategy=env_placement)
+    env_worker_cls = EnvWorker
+    if cfg.env.eval.get("one_episode_per_env", False):
+        from isaaclab_contrib.rl.rlinf.eval_worker import IsaacLabOneEpisodeEvalWorker
+
+        env_worker_cls = IsaacLabOneEpisodeEvalWorker
+
+    env_group = env_worker_cls.create_group(cfg).launch(
+        cluster, name=cfg.env.group_name, placement_strategy=env_placement
+    )
 
     # Run evaluation
     runner = EmbodiedEvalRunner(
