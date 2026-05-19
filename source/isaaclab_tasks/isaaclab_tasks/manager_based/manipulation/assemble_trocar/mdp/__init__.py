@@ -23,12 +23,13 @@
 from isaaclab.envs.mdp import JointPositionActionCfg, time_out
 
 from .events import (
+    randomize_image_brightness,
     reset_robot_to_default_joint_positions,
     reset_task_stage,
     reset_tray_with_random_rotation,
     tag_scene_subprims_semantics,
 )
-from .observations import get_robot_body_joint_states, get_robot_dex3_joint_states
+from .observations import get_robot_body_joint_states, get_robot_dex3_joint_states, image_with_random_brightness
 from .rewards import (
     lift_trocars_reward,
     trocar_insertion_reward,
@@ -43,6 +44,8 @@ __all__ = [
     "time_out",
     "get_robot_body_joint_states",
     "get_robot_dex3_joint_states",
+    "image_with_random_brightness",
+    "randomize_image_brightness",
     "reset_tray_with_random_rotation",
     "reset_robot_to_default_joint_positions",
     "reset_task_stage",

@@ -134,14 +134,44 @@ SCENE_VARIANT_ENV_SPACING = {
     "orca": 50.0,
     "surgical_room": 50.0,
 }
+SCENE_RANDOMIZE_LIGHTING_REQUESTED = (
+    os.environ.get("ASSEMBLE_TROCAR_RANDOMIZE_LIGHTING", "false").strip().lower() in {"1", "true", "yes", "on"}
+)
+default_scene_env_spacing = SCENE_VARIANT_ENV_SPACING[SCENE_VARIANT]
 SCENE_ENV_SPACING = float(
-    os.environ.get("ASSEMBLE_TROCAR_ENV_SPACING", SCENE_VARIANT_ENV_SPACING[SCENE_VARIANT])
+    os.environ.get("ASSEMBLE_TROCAR_ENV_SPACING", default_scene_env_spacing)
 )
 SCENE_REPLICATE_PHYSICS = os.environ.get(
     "ASSEMBLE_TROCAR_REPLICATE_PHYSICS",
     "true" if SCENE_VARIANT == "default" else "false",
 ).strip().lower() in {"1", "true", "yes", "on"}
 # SCENE_REPLICATE_PHYSICS = False
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float_pair(name: str, default: tuple[float, float]) -> tuple[float, float]:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 2:
+        raise ValueError(f"{name} must be two comma-separated floats, got {value!r}.")
+    return (float(parts[0]), float(parts[1]))
+
+
+DEFAULT_SCENE_RANDOMIZE_LIGHTING = SCENE_RANDOMIZE_LIGHTING_REQUESTED and SCENE_VARIANT == "default"
+DEFAULT_RANDOM_IMAGE_BRIGHTNESS_RANGE = _env_float_pair(
+    "ASSEMBLE_TROCAR_RANDOM_IMAGE_BRIGHTNESS_RANGE",
+    (30.0, 120.0),
+)
+DEFAULT_RANDOM_IMAGE_BRIGHTNESS_PRINT_LOG = _env_bool("ASSEMBLE_TROCAR_RANDOM_IMAGE_BRIGHTNESS_PRINT_LOG", False)
+CAMERA_IMAGE_OBS_FUNC = mdp.image_with_random_brightness if DEFAULT_SCENE_RANDOMIZE_LIGHTING else base_mdp.image
 
 
 def _wxyz_to_xyzw(rot: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
@@ -409,15 +439,15 @@ class ObservationsCfg:
         """Observations from the robot's cameras."""
 
         front_camera = ObsTerm(
-            func=base_mdp.image,
+            func=CAMERA_IMAGE_OBS_FUNC,
             params={"sensor_cfg": SceneEntityCfg("front_camera"), "data_type": "rgb", "normalize": False},
         )
         left_wrist_camera = ObsTerm(
-            func=base_mdp.image,
+            func=CAMERA_IMAGE_OBS_FUNC,
             params={"sensor_cfg": SceneEntityCfg("left_wrist_camera"), "data_type": "rgb", "normalize": False},
         )
         right_wrist_camera = ObsTerm(
-            func=base_mdp.image,
+            func=CAMERA_IMAGE_OBS_FUNC,
             params={"sensor_cfg": SceneEntityCfg("right_wrist_camera"), "data_type": "rgb", "normalize": False},
         )
 
@@ -443,7 +473,7 @@ class TerminationsCfg:
         time_out=False,  # This is a success termination, not a failure
         params={
             "print_log": False,
-            "success_stage": 4, # 1 for starting training, 4 for playing evaluation
+            "success_stage": 2, # 1,2,3,4 for starting training, 4 for playing evaluation
         },
     )
     object_drop = DoneTerm(
@@ -553,6 +583,18 @@ class EventCfg:
             "rotation_range": [0, 10],
         },
     )
+
+    if DEFAULT_SCENE_RANDOMIZE_LIGHTING:
+        randomize_image_brightness = EventTermCfg(
+            func=mdp.randomize_image_brightness,
+            mode="reset",
+            params={
+                "brightness_range": DEFAULT_RANDOM_IMAGE_BRIGHTNESS_RANGE,
+                "stratify_targets": True,
+                "shuffle_targets": True,
+                "print_log": DEFAULT_RANDOM_IMAGE_BRIGHTNESS_PRINT_LOG,
+            },
+        )
 
 
 @configclass

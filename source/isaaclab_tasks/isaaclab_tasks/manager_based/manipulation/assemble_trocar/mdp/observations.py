@@ -29,11 +29,51 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import isaaclab.envs.mdp as base_mdp
 import torch
 import warp as wp
+from isaaclab.managers import SceneEntityCfg
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def image_with_random_brightness(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("front_camera"),
+    data_type: str = "rgb",
+    convert_perspective_to_orthogonal: bool = False,
+    normalize: bool = False,
+) -> torch.Tensor:
+    """Read camera images and apply per-env scalar brightness targets.
+
+    The render itself stays on the original scene lighting. The reset event sets
+    ``_assemble_trocar_image_brightness_targets`` in image-space mean intensity
+    units, and this observation term scales RGB channels uniformly to preserve
+    the original color ratios as much as possible.
+    """
+    images = base_mdp.image(
+        env=env,
+        sensor_cfg=sensor_cfg,
+        data_type=data_type,
+        convert_perspective_to_orthogonal=convert_perspective_to_orthogonal,
+        normalize=normalize,
+    )
+    targets = getattr(env, "_assemble_trocar_image_brightness_targets", None)
+    if data_type != "rgb" or normalize or targets is None:
+        return images
+
+    target = targets.to(device=images.device, dtype=torch.float32).view(-1, 1, 1, 1)
+    rgb = images[..., :3].float()
+    current_mean = rgb.mean(dim=(1, 2, 3), keepdim=True).clamp_min(1.0)
+    scaled_rgb = (rgb * (target / current_mean)).clamp(0.0, 255.0)
+
+    out = images.clone()
+    if out.dtype == torch.uint8:
+        out[..., :3] = scaled_rgb.round().to(torch.uint8)
+    else:
+        out[..., :3] = scaled_rgb.to(out.dtype)
+    return out
 
 
 # Observation cache: index tensors + preallocated output buffers (body joints)

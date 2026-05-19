@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 __all__ = [
+    "randomize_image_brightness",
     "reset_tray_with_random_rotation",
     "reset_robot_to_default_joint_positions",
     "reset_task_stage",
@@ -147,6 +148,67 @@ def reset_task_stage(
     if print_log:
         print(f"Reset task stage for {len(env_ids)} environment(s)")
 
+
+def randomize_image_brightness(
+    env: ManagerBasedRLEnv,
+    env_ids: torch.Tensor | None,
+    brightness_range: tuple[float, float] = (30.0, 120.0),
+    stratify_targets: bool = True,
+    shuffle_targets: bool = True,
+    print_log: bool = False,
+) -> None:
+    """Assign per-env image-space brightness targets for RGB camera observations.
+
+    This preserves the USD scene lighting and material colors, then lets the
+    camera observation term uniformly scale RGB channels to the sampled mean
+    brightness. It is intended for visual-domain randomization without the color
+    shifts caused by synthetic per-env light rigs.
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=env.device, dtype=torch.long)
+    if len(env_ids) == 0:
+        return
+
+    min_brightness, max_brightness = brightness_range
+    if max_brightness < min_brightness:
+        raise ValueError(
+            f"brightness_range must be ordered as (min, max), got {brightness_range}."
+        )
+
+    targets = getattr(env, "_assemble_trocar_image_brightness_targets", None)
+    if targets is None or targets.shape[0] != env.scene.num_envs:
+        env._assemble_trocar_image_brightness_targets = torch.full(
+            (env.scene.num_envs,),
+            (float(min_brightness) + float(max_brightness)) * 0.5,
+            device=env.device,
+            dtype=torch.float32,
+        )
+
+    if stratify_targets and len(env_ids) > 1:
+        brightness_targets = torch.linspace(
+            float(min_brightness),
+            float(max_brightness),
+            len(env_ids),
+            device=env.device,
+            dtype=torch.float32,
+        )
+        if shuffle_targets:
+            brightness_targets = brightness_targets[torch.randperm(len(env_ids), device=env.device)]
+    else:
+        brightness_targets = (
+            torch.rand(len(env_ids), device=env.device, dtype=torch.float32)
+            * (float(max_brightness) - float(min_brightness))
+            + float(min_brightness)
+        )
+
+    env._assemble_trocar_image_brightness_targets[env_ids] = brightness_targets
+    if print_log:
+        print(
+            "[randomize_image_brightness] "
+            f"env_ids={env_ids.detach().cpu().tolist()} "
+            f"targets={brightness_targets.detach().cpu().tolist()}",
+            flush=True,
+        )
 
 def reset_tray_with_random_rotation(
     env: ManagerBasedRLEnv,
