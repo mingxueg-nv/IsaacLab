@@ -95,7 +95,7 @@ from rlinf.config import validate_cfg  # noqa: E402
 from rlinf.runners.embodied_runner import EmbodiedRunner  # noqa: E402
 from rlinf.scheduler import Cluster  # noqa: E402
 from rlinf.utils.placement import HybridComponentPlacement  # noqa: E402
-from rlinf.workers.env.env_worker import EnvWorker  # noqa: E402
+from isaaclab_contrib.rl.rlinf.env_worker import IsaacLabChunkMetricsEnvWorker  # noqa: E402
 from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker  # noqa: E402
 
 
@@ -231,9 +231,12 @@ def main():
         cluster, name=cfg.rollout.group_name, placement_strategy=rollout_placement
     )
 
-    # Create env worker
+    # Create env worker. This repo-local subclass keeps rollout data unchanged
+    # while aggregating AC>1 episode metrics from the actual done substep.
     env_placement = component_placement.get_strategy("env")
-    env_group = EnvWorker.create_group(cfg).launch(cluster, name=cfg.env.group_name, placement_strategy=env_placement)
+    env_group = IsaacLabChunkMetricsEnvWorker.create_group(cfg).launch(
+        cluster, name=cfg.env.group_name, placement_strategy=env_placement
+    )
 
     # Create and run training
     runner = EmbodiedRunner(
