@@ -165,8 +165,18 @@ def _patch_embodiment_tags(cfg: dict) -> None:
 def _patch_gr00t_get_model(cfg: dict) -> None:
     """Monkeypatch RLinf's GR00T ``get_model`` to support custom ``data_config``.
 
-    The patch is applied only when the user specifies a ``data_config_class`` in the
-    YAML config. Embodiment tags are always ensured to be registered.
+    The patch is applied only when:
+      1. The user specifies a ``data_config_class`` in the YAML config, AND
+      2. The user is on the N1.5 model path (``actor.model.model_type == "gr00t"``).
+
+    For N1.6/N1.7, ``rlinf.models.embodiment.gr00t_1_{6,7}.get_model`` already
+    loads ``modality_config`` directly from the ckpt's ``experiment_cfg/config.yaml``
+    and does NOT need ``gr00t.experiment.data_config`` (which was removed in N1.7).
+    Patching here would shadow RLinf's per-version routing and force the model
+    through the N1.5 ``GR00T_N1_5_ForRLActionPrediction`` class even when the
+    yaml requests ``gr00t_1_7`` — breaking everything downstream.
+
+    Embodiment tags are always ensured to be registered (all versions need this).
 
     Args:
         cfg: The IsaacLab-specific configuration dictionary (``env.train.isaaclab``).
@@ -177,6 +187,18 @@ def _patch_gr00t_get_model(cfg: dict) -> None:
     data_config_class = cfg.get("data_config_class", "")
     if not data_config_class:
         logger.info("No data_config_class specified, using RLinf's default get_model")
+        return
+
+    # Don't patch the N1.5 entrypoint when the user is on N1.6/N1.7 — those
+    # adapters load modality_config directly from the ckpt.
+    model_type = (
+        _load_full_cfg().get("actor", {}).get("model", {}).get("model_type", "gr00t")
+    )
+    if model_type != "gr00t":
+        logger.info(
+            f"actor.model.model_type='{model_type}' uses its own adapter; "
+            f"skipping N1.5 get_model monkeypatch (and ignoring data_config_class)."
+        )
         return
 
     import rlinf.models.embodiment.gr00t as rlinf_gr00t_mod
@@ -256,22 +278,42 @@ def _register_gr00t_converters(cfg: dict) -> None:
 
     Reads ``obs_converter_type`` from the YAML config (``env.train.isaaclab.obs_converter_type``)
     and registers the corresponding observation and action conversion functions into
-    RLinf's ``simulation_io`` registry.
+    RLinf's ``simulation_io`` registry — for every GR00T version's adapter that's
+    installed in this venv. This makes the converter visible whether the user
+    selects ``model_type: gr00t`` (N1.5), ``gr00t_1_6``, or ``gr00t_1_7``.
 
     Args:
         cfg: The IsaacLab-specific configuration dictionary (``env.train.isaaclab``).
     """
-    from rlinf.models.embodiment.gr00t import simulation_io
-
     obs_converter_type = cfg.get("obs_converter_type", "dex3")
 
-    if obs_converter_type not in simulation_io.OBS_CONVERSION:
-        simulation_io.OBS_CONVERSION[obs_converter_type] = _convert_isaaclab_obs_to_gr00t
-        logger.info(f"Registered obs converter: {obs_converter_type}")
+    # Register the converter into every GR00T adapter module that exists in this
+    # venv (the actual adapter used at runtime is selected by yaml model_type).
+    adapter_modules = []
+    for mod_path in (
+        "rlinf.models.embodiment.gr00t.simulation_io",
+        "rlinf.models.embodiment.gr00t_1_6.simulation_io",
+        "rlinf.models.embodiment.gr00t_1_7.simulation_io",
+    ):
+        try:
+            import importlib
 
-    if obs_converter_type not in simulation_io.ACTION_CONVERSION:
-        simulation_io.ACTION_CONVERSION[obs_converter_type] = _convert_gr00t_to_isaaclab_action
-        logger.info(f"Registered action converter: {obs_converter_type}")
+            adapter_modules.append(importlib.import_module(mod_path))
+        except ImportError:
+            logger.debug(f"adapter not installed, skipping converter registration: {mod_path}")
+
+    for simulation_io in adapter_modules:
+        if obs_converter_type not in simulation_io.OBS_CONVERSION:
+            simulation_io.OBS_CONVERSION[obs_converter_type] = _convert_isaaclab_obs_to_gr00t
+            logger.info(
+                f"Registered obs converter: {obs_converter_type} -> {simulation_io.__name__}"
+            )
+
+        if obs_converter_type not in simulation_io.ACTION_CONVERSION:
+            simulation_io.ACTION_CONVERSION[obs_converter_type] = _convert_gr00t_to_isaaclab_action
+            logger.info(
+                f"Registered action converter: {obs_converter_type} -> {simulation_io.__name__}"
+            )
 
 
 def _convert_isaaclab_obs_to_gr00t(env_obs: dict) -> dict:

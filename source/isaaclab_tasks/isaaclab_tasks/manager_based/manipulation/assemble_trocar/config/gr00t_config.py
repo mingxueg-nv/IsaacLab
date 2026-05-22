@@ -3,142 +3,146 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""GR00T data configuration for IsaacLab tasks.
+"""GR00T N1.7 modality config for IsaacLab assemble_trocar task (G1+Dex3).
 
-This module defines customizable GR00T data configurations for different
-embodiments. Users can create their own data config classes by subclassing
-BaseDataConfig or copying/modifying the examples here.
+What changed vs the N1.5 version of this file:
 
-Example usage in run.sh:
-    export RLINF_DATA_CONFIG="policy.gr00t_config"
-    export RLINF_DATA_CONFIG_CLASS="policy.gr00t_config:IsaacLabDataConfig"
+  * N1.7 removed ``gr00t.experiment.data_config`` (``BaseDataConfig`` /
+    ``DATA_CONFIG_MAP``) and ``gr00t.model.transforms.GR00TTransform``. The
+    entire transform pipeline (video crop / colour jitter / normalisation /
+    padding to head width) is now baked into ``Gr00tN1d7Processor`` and is
+    configured *on the ckpt side* via ``experiment_cfg/config.yaml`` at SFT
+    time. Users only declare:
+
+      1. which keys exist (``modality_keys``, ``delta_indices``),
+      2. which action representation each key uses (``RELATIVE`` / ``ABSOLUTE``,
+         ``EEF`` / ``NON_EEF``).
+
+  * Normalisation mode is no longer set per-key here — it's read from
+    ``statistics.json`` (``q01`` / ``q99`` percentiles) in the ckpt.
+
+  * Action-side relative→absolute conversion is done by
+    ``Gr00tN1d7Processor.decode_action`` automatically; this file does **not**
+    need to express that math.
+
+  * The ``IsaacLabDataConfig`` Python class is kept only as a tiny compatibility
+    shim — the new RLinf N1.7 adapter (``rlinf.models.embodiment.gr00t_1_7``)
+    loads ``modality_config`` directly from the ckpt's
+    ``experiment_cfg/config.yaml`` and does **not** import this class. If
+    anything in IsaacLab still references ``data_config_class:
+    "gr00t_config:IsaacLabDataConfig"`` it will still resolve, but the returned
+    config is the same dict we register below.
+
+Source of truth for all numbers (ckpt
+``/localhome/local-mingxueg/mingxue/models/GR00tN1_7_sim_assemble_trocar/
+tune_visual/checkpoint-30000/experiment_cfg/config.yaml``):
+
+    action.modality_keys     : [left_arm, right_arm, left_hand, right_hand]
+    action.delta_indices     : 0..15  (16 chunks)
+    action.action_configs    : [RELATIVE, RELATIVE, ABSOLUTE, ABSOLUTE]
+                               (arms = delta-joint, hands = target-joint)
+    state.modality_keys      : same 4 keys, 7 dims each (28 total)
+    video.modality_keys      : [left_wrist_view, right_wrist_view, room_view]
+    language.modality_keys   : [annotation.human.task_description]
+    embodiment_tag           : NEW_EMBODIMENT (id 10 in N1.7 embodiment_id.json)
 """
 
-from gr00t.data.dataset import ModalityConfig
-from gr00t.data.transform.base import ComposedModalityTransform
-from gr00t.data.transform.concat import ConcatTransform
-from gr00t.data.transform.state_action import StateActionSinCosTransform, StateActionToTensor, StateActionTransform
-from gr00t.data.transform.video import VideoColorJitter, VideoToNumpy, VideoToTensor
-from gr00t.experiment.data_config import DATA_CONFIG_MAP, BaseDataConfig
-from gr00t.model.transforms import GR00TTransform
+from gr00t.configs.data.embodiment_configs import register_modality_config
+from gr00t.data.embodiment_tags import EmbodimentTag
+from gr00t.data.types import (
+    ActionConfig,
+    ActionFormat,
+    ActionRepresentation,
+    ActionType,
+    ModalityConfig,
+)
 
 
-class IsaacLabDataConfig(BaseDataConfig):
-    """Generic GR00T data config for IsaacLab tasks with G1 + Dex3."""
+# Bare modality keys (no "video." / "state." / "action." prefix — N1.7
+# convention). The prefix is added downstream by Gr00tN1d7Processor.
+VIDEO_KEYS = ["left_wrist_view", "right_wrist_view", "room_view"]
+STATE_KEYS = ["left_arm", "right_arm", "left_hand", "right_hand"]
+ACTION_KEYS = ["left_arm", "right_arm", "left_hand", "right_hand"]
+LANGUAGE_KEYS = ["annotation.human.task_description"]
 
-    # Video modality keys (from gr00t_mapping.video in RLINF_OBS_MAP_JSON)
-    video_keys = [
-        "video.left_wrist_view",
-        "video.right_wrist_view",
-        "video.room_view",
-    ]
+# Action chunk window: 16 steps. Must match ckpt action.delta_indices length.
+ACTION_DELTA_INDICES = list(range(16))
 
-    # State modality keys (from gr00t_mapping.state in RLINF_OBS_MAP_JSON)
-    state_keys = [
-        "state.left_arm",
-        "state.right_arm",
-        "state.left_hand",
-        "state.right_hand",
-    ]
 
-    # Action modality keys (output from GR00T model)
-    action_keys = [
-        "action.left_arm",
-        "action.right_arm",
-        "action.left_hand",
-        "action.right_hand",
-    ]
+ISAACLAB_G1_DEX3_MODALITY_CONFIG: dict[str, ModalityConfig] = {
+    "video": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=VIDEO_KEYS,
+    ),
+    "state": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=STATE_KEYS,
+    ),
+    "action": ModalityConfig(
+        delta_indices=ACTION_DELTA_INDICES,
+        modality_keys=ACTION_KEYS,
+        action_configs=[
+            # left_arm: 7-DoF joint angles, trained as deltas → safer for
+            # joint-space control; processor will do q_target = current + dq.
+            ActionConfig(
+                rep=ActionRepresentation.RELATIVE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            ),
+            # right_arm: same as left_arm.
+            ActionConfig(
+                rep=ActionRepresentation.RELATIVE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            ),
+            # left_hand (Dex3, 7-DoF): hands are easier to learn as absolute
+            # target finger positions in our SFT recipe.
+            ActionConfig(
+                rep=ActionRepresentation.ABSOLUTE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            ),
+            # right_hand: same as left_hand.
+            ActionConfig(
+                rep=ActionRepresentation.ABSOLUTE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            ),
+        ],
+    ),
+    "language": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=LANGUAGE_KEYS,
+    ),
+}
 
-    # Language annotation key
-    language_keys = ["annotation.human.task_description"]
 
-    # Observation and action indices
-    observation_indices = [0]
-    action_indices = list(range(16))
+# Register against NEW_EMBODIMENT so GR00T's processor / model heads route
+# this embodiment through the correct projector slot (id=10 in the N1.7
+# embodiment_id.json shipped with our SFT ckpt).
+register_modality_config(
+    ISAACLAB_G1_DEX3_MODALITY_CONFIG,
+    embodiment_tag=EmbodimentTag.NEW_EMBODIMENT,
+)
+
+
+class IsaacLabDataConfig:
+    """Compatibility shim for legacy N1.5 yaml ``data_config_class`` field.
+
+    The RLinf N1.7 adapter (``rlinf.models.embodiment.gr00t_1_7.get_model``)
+    pulls ``modality_config`` straight out of the ckpt's
+    ``experiment_cfg/config.yaml``, so this class is effectively unused on the
+    N1.7 path. Keeping the class around lets the N1.5 monkeypatch in
+    ``isaaclab_contrib/rl/rlinf/extension.py:_patch_gr00t_get_model`` still
+    resolve when someone runs the legacy yaml.
+    """
 
     def modality_config(self) -> dict[str, ModalityConfig]:
-        """Define modality configurations for video, state, action, and language."""
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-
-        return {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
+        return ISAACLAB_G1_DEX3_MODALITY_CONFIG
 
     def transform(self):
-        """Define the transform pipeline for processing observations and actions."""
-        transforms = [
-            # Video transforms
-            VideoToTensor(apply_to=self.video_keys),
-            # Disabled: camera already outputs 224×224 via TiledCameraCfg.
-            # To avoid VideoToTensor size-check errors, either:
-            #   1. Disable input size validation in VideoToTensor, OR
-            #   2. Set modality meta height/width to 224 to match actual input.
-            # Re-enable VideoCrop/VideoResize if camera resolution changes.
-            # VideoCrop(apply_to=self.video_keys, scale=0.95),
-            # VideoResize(
-            #     apply_to=self.video_keys,
-            #     height=224,
-            #     width=224,
-            #     interpolation="linear",
-            # ),
-            VideoColorJitter(
-                apply_to=self.video_keys,
-                brightness=0.3,
-                contrast=0.4,
-                saturation=0.5,
-                hue=0.08,
-            ),
-            VideoToNumpy(apply_to=self.video_keys),
-            # State transforms
-            StateActionToTensor(apply_to=self.state_keys),
-            StateActionSinCosTransform(apply_to=self.state_keys),
-            # Action transforms
-            StateActionToTensor(apply_to=self.action_keys),
-            StateActionTransform(
-                apply_to=self.action_keys,
-                normalization_modes={key: "min_max" for key in self.action_keys},
-            ),
-            # Concat transforms
-            ConcatTransform(
-                video_concat_order=self.video_keys,
-                state_concat_order=self.state_keys,
-                action_concat_order=self.action_keys,
-            ),
-            # Model-specific transform
-            GR00TTransform(
-                state_horizon=len(self.observation_indices),
-                action_horizon=len(self.action_indices),
-                max_state_dim=64,
-                max_action_dim=32,
-            ),
-        ]
-        return ComposedModalityTransform(transforms=transforms)
-
-
-# --------------------------------------------------------------------------
-# Register data configs into GR00T's DATA_CONFIG_MAP
-# --------------------------------------------------------------------------
-
-# This allows load_data_config("policy.gr00t_config:IsaacLabDataConfig") to work
-DATA_CONFIG_MAP["isaaclab_g1_dex3"] = IsaacLabDataConfig()
+        # N1.7 has no separate GR00TTransform — everything lives in
+        # Gr00tN1d7Processor inside the model. RLinf's N1.7 adapter checks
+        # for ``modality_transform is None`` and falls through to constructing
+        # the processor from the ckpt files.
+        return None
