@@ -75,8 +75,7 @@ offset_dict = {
     "right_elbow_joint": -0.3,
 }
 
-HEALTHCARE_S3 = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/Healthcare/0.5.0/132c82d"
-USD_ROOT = f"{HEALTHCARE_S3}/Props/LightWheel"
+USD_ROOT = "/localhome/local-mingxueg/mingxue/IsaacLab/assets/Props/LightWheel"
 
 
 @configclass

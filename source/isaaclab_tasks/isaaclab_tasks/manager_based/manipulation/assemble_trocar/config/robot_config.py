@@ -110,6 +110,12 @@ DEFAULT_JOINT_POS: dict[str, float] = {
 }
 
 
+G1_29DOF_DEX3_USD_PATH = (
+    "/localhome/local-mingxueg/mingxue/IsaacLab/assets/"
+    "Robots/UnitreeG1/g1_29dof_with_dex3_base_fix/g1_29dof_with_dex3_base_fix.usd"
+)
+
+
 def make_g1_29dof_dex3_cfg(
     *,
     prim_path: str = "/World/envs/env_.*/Robot",
@@ -122,7 +128,7 @@ def make_g1_29dof_dex3_cfg(
     joint_pos = DEFAULT_JOINT_POS.copy()
     if custom_joint_pos:
         joint_pos.update(custom_joint_pos)
-    return base_config.replace(
+    cfg = base_config.replace(
         prim_path=prim_path,
         init_state=ArticulationCfg.InitialStateCfg(
             pos=init_pos,
@@ -131,6 +137,8 @@ def make_g1_29dof_dex3_cfg(
             joint_vel={".*": 0.0},
         ),
     )
+    cfg.spawn.usd_path = G1_29DOF_DEX3_USD_PATH
+    return cfg
 
 
 @configclass

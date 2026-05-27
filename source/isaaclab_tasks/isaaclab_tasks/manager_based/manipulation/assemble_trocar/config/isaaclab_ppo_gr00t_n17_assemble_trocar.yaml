@@ -31,7 +31,37 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-      actor,env,rollout: all
+      actor,env,rollout: 0,1
+
+# Weight syncer config (REQUIRED in RLinf >=0.3, was added after the 0.2.0dev2
+# template that the N1.5 yaml in this folder was originally built from).
+#
+# Both EmbodiedFSDPActor and MultiStepRolloutWorker do
+#   weight_syncer_cfg = OmegaConf.select(cfg, "weight_syncer")
+#   assert weight_syncer_cfg is not None
+# at __init__ time. Missing this block -> both workers die in __init__ before
+# any training/inference happens.
+#
+# Inlined (rather than via `defaults: - weight_syncer/patch_syncer@weight_syncer`)
+# to avoid depending on EMBODIED_PATH / Hydra searchpath plumbing — keeps this
+# yaml self-contained and runnable from IsaacLab's script entrypoint.
+#
+# Mirrors RLinf's official GR00T example
+# (examples/embodiment/config/weight_syncer/patch_syncer.yaml): actor and
+# rollout share the same GPU (component_placement above), so we keep snapshot
+# and transport on CPU and rely on patch + delta encoding to keep the per-step
+# weight transfer cheap.
+weight_syncer:
+  type: patch
+  patch:
+    snapshot_device: cpu
+    transport_device: cpu
+    delta_encoding: True
+    compression: none
+    init_sync:
+      enabled: True
+      prefixes: null
+      bucket_size: 134217728
 
 runner:
   task_type: embodied
@@ -58,7 +88,7 @@ algorithm:
   kl_penalty: kl
   group_size: 1
   reward_coef: 1.0
-  rollout_epoch: 2
+  rollout_epoch: 1
   eval_rollout_epoch: 1
 
   reward_type: chunk_level
@@ -111,7 +141,7 @@ env:
 
   train:
     env_type: isaaclab
-    total_num_envs: 4
+    total_num_envs: 2
     auto_reset: False
     ignore_terminations: False
     use_rel_reward: True
@@ -119,7 +149,7 @@ env:
     group_size: 1
     reward_coef: 1.0
     use_fixed_reset_state_ids: True
-    max_steps_per_rollout_epoch: 256
+    max_steps_per_rollout_epoch: 64
     max_episode_steps: 256
     video_cfg:
       save_video: False
@@ -157,14 +187,19 @@ env:
             - "video.right_wrist_view"
         state:
           # 14 shoulder + 14 dex3 = 28 dims, split into 4 keys matching
-          # ckpt experiment_cfg/config.yaml modality_configs.state.modality_keys.
-          - gr00t_key: "state.left_arm"
+          # ckpt experiment_cfg/config.yaml modality_configs.new_embodiment.state.modality_keys.
+          # IMPORTANT: keys must be BARE (no "state." prefix). N1.7's
+          # state_action_processor.apply_state looks up keys verbatim from the ckpt's
+          # modality_keys, which are bare ("left_arm", not "state.left_arm").
+          # (Video keys are tolerated either way -- N1.7's apply_transforms rebuilds
+          # images_dict using ckpt req_img_keys directly, dropping any "video." prefix.)
+          - gr00t_key: "left_arm"
             slice: [0, 7]
-          - gr00t_key: "state.right_arm"
+          - gr00t_key: "right_arm"
             slice: [7, 14]
-          - gr00t_key: "state.left_hand"
+          - gr00t_key: "left_hand"
             slice: [14, 21]
-          - gr00t_key: "state.right_hand"
+          - gr00t_key: "right_hand"
             slice: [21, 28]
 
       # --- GR00T -> IsaacLab action conversion ---
@@ -245,24 +280,41 @@ actor:
     queue_name: "replay_buffer"
     queue_size: 0
   training_backend: "fsdp"
+  num_gpus: 1                               # required by RLinf 0.3 FSDP world-size accounting
   micro_batch_size: 2
   global_batch_size: 4
   seed: 1234
   enable_offload: False
 
   model:
-    model_type: "gr00t_1_7"                 # was "gr00t"; routes to rlinf.models.embodiment.gr00t_1_7
+    # Mirrors RLinf's N1.6 reference model template
+    # (examples/embodiment/config/model/gr00t_16.yaml), with the model_type
+    # bumped to gr00t_1_7. RLinf's own gr00t_17.yaml on this branch is a
+    # one-line copy of the N1.6 template (model_type only), so N1.6 is the
+    # ground truth for everything else (padding_value, rl_head_config layout,
+    # FSDP wrap classes...).
+    model_type: "gr00t_1_7"                 # routes to rlinf.models.embodiment.gr00t_1_7
     model_path: ${rollout.model.model_path}
     precision: "bf16"
     trust_remote_code: True
     is_lora: false
     action_dim: 28                          # 4 keys x 7 dims, derived from ckpt statistics.json
-    num_action_chunks: 16                   # was 1; matches ckpt's action.delta_indices = [0..15]
+    num_action_chunks: 16                   # matches ckpt's action.delta_indices = [0..15]
     denoising_steps: 4                      # matches ckpt num_inference_timesteps
-    policy_setup: "widowx_bridge"
     obs_converter_type: ${env.train.isaaclab.obs_converter_type}
     embodiment_tag: ${env.train.isaaclab.embodiment_tag}
     add_value_head: True
+    # FSDP must not split these modules across ranks. List mirrors N1.6 ref
+    # (Qwen3 backbone, Siglip2 vision encoder, flow-matching action head, and
+    # the value/noise heads RLinf attaches on top for PPO).
+    no_split_modules:
+      - "Qwen3DecoderLayer"
+      - "Siglip2EncoderLayer"
+      - "FlowMatchingActionHeadForRLActionPrediction"
+      - "TimestepEncoder"
+      - "TimestepEmbedding"
+      - "ValueHead"
+      - "ExploreNoiseNet"
     rl_head_config:
       joint_logprob: False
       noise_method: "flow_sde"
@@ -277,40 +329,40 @@ actor:
       disable_dropout: True
       use_vlm_value: False
       value_vlm_mode: "mean_token"
-      padding_value: 850
+      # 570 is the N1.6/N1.7 reference value (was 850 in the N1.5 yaml we
+      # originally branched from). padding_value controls how many extra tokens
+      # the action head reserves; using a value that mismatches the SFT ckpt
+      # silently corrupts the head's output layout.
+      padding_value: 570
 
   optim:
-    lr: 5e-6
-    value_lr: 1e-4
+    lr: 5.0e-6
+    value_lr: 1.0e-4
     adam_beta1: 0.9
     adam_beta2: 0.95
     adam_eps: 1.0e-08
-    clip_grad: 1.0
     weight_decay: 0.01
+    clip_grad: 1.0
     critic_warmup_steps: 0
 
+  # FSDP config — kept minimal, exactly matching RLinf's N1.6 reference
+  # (examples/embodiment/config/libero_spatial_ppo_gr00t_16.yaml). The list of
+  # wrap classes mirrors actor.model.no_split_modules so FSDP boundaries align
+  # with the modules the model itself treats as atomic.
   fsdp_config:
     strategy: "fsdp"
-    sharding_strategy: "full_shard"
-    gradient_checkpointing: False
-    cpu_offload: False
-    offload_pin_memory: False
-    reshard_after_forward: True
-    enable_gradient_accumulation: True
-    forward_prefetch: False
-    limit_all_gathers: False
-    backward_prefetch: null
-    use_orig_params: False
-    use_liger_kernel: False
-    fsdp_size: -1
+    transformer_layer_cls_to_wrap:
+      - "Qwen3DecoderLayer"
+      - "Siglip2EncoderLayer"
+      - "FlowMatchingActionHeadForRLActionPrediction"
+      - "TimestepEncoder"
+      - "TimestepEmbedding"
+      - "ValueHead"
+      - "ExploreNoiseNet"
     mixed_precision:
       param_dtype: ${actor.model.precision}
       reduce_dtype: ${actor.model.precision}
       buffer_dtype: ${actor.model.precision}
-    amp:
-      enabled: False
-      precision: "bf16"
-      use_grad_scaler: False
 
 reward:
   use_reward_model: False

@@ -303,17 +303,25 @@ def _register_gr00t_converters(cfg: dict) -> None:
             logger.debug(f"adapter not installed, skipping converter registration: {mod_path}")
 
     for simulation_io in adapter_modules:
-        if obs_converter_type not in simulation_io.OBS_CONVERSION:
-            simulation_io.OBS_CONVERSION[obs_converter_type] = _convert_isaaclab_obs_to_gr00t
-            logger.info(
-                f"Registered obs converter: {obs_converter_type} -> {simulation_io.__name__}"
-            )
+        # Force-override: gr00t_1_7's simulation_io ships an identity stub for
+        # "passthrough" that assumes the env wrapper already did the gr00t_mapping
+        # rename (main_images -> video.room_view, robot_joint_state[15:29] ->
+        # state.left_arm, etc.). For the IsaacLab path we DO want the yaml-driven
+        # _convert_isaaclab_obs_to_gr00t below to run, otherwise apply_transforms
+        # gets the raw IsaacLab keys and IndexError-s in obs[img_k][i].
+        prev_obs = simulation_io.OBS_CONVERSION.get(obs_converter_type)
+        simulation_io.OBS_CONVERSION[obs_converter_type] = _convert_isaaclab_obs_to_gr00t
+        logger.info(
+            f"Registered obs converter: {obs_converter_type} -> {simulation_io.__name__}"
+            + (f" (overrode {prev_obs.__name__})" if prev_obs is not None else "")
+        )
 
-        if obs_converter_type not in simulation_io.ACTION_CONVERSION:
-            simulation_io.ACTION_CONVERSION[obs_converter_type] = _convert_gr00t_to_isaaclab_action
-            logger.info(
-                f"Registered action converter: {obs_converter_type} -> {simulation_io.__name__}"
-            )
+        prev_act = simulation_io.ACTION_CONVERSION.get(obs_converter_type)
+        simulation_io.ACTION_CONVERSION[obs_converter_type] = _convert_gr00t_to_isaaclab_action
+        logger.info(
+            f"Registered action converter: {obs_converter_type} -> {simulation_io.__name__}"
+            + (f" (overrode {prev_act.__name__})" if prev_act is not None else "")
+        )
 
 
 def _convert_isaaclab_obs_to_gr00t(env_obs: dict) -> dict:
