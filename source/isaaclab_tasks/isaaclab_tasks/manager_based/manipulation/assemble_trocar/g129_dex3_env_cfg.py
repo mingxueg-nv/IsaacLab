@@ -257,7 +257,7 @@ class TerminationsCfg:
         time_out=False,  # This is a success termination, not a failure
         params={
             "print_log": False,
-            "success_stage": 2, # 1 for starting training, 4 for playing evaluation
+            "success_stage": 4, # 1 for starting training, 4 for playing evaluation
         },
     )
     object_drop = DoneTerm(
@@ -468,10 +468,11 @@ MULTIMODAL_DATA_TYPES = (
     "semantic_segmentation",
 )
 
-# Scene-level labels are intentionally omitted from the segmentation mask path.
-# The semantic filter keeps only robot, tray, and the two trocar foreground
-# assets so built-in scene USD labels do not add noise to the masks.
-SCENE_SUBPRIM_SEMANTIC_MAP: dict[str, str] = {}
+# Keep the visible support cart with the foreground so background inpainting
+# does not redraw the structure directly under the surgical tray.
+SCENE_SUBPRIM_SEMANTIC_MAP: dict[str, str] = {
+    "Cart001": "cart",
+}
 
 
 @clone

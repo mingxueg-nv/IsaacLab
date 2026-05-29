@@ -30,7 +30,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--mask_preserve_classes",
-    default="robot,tray,trocar,trocar_device",
+    default="robot,tray,cart,trocar,trocar_device",
     help="Comma-separated semantic classes to preserve as foreground when --background_mask is enabled.",
 )
 parser.add_argument(
@@ -40,6 +40,18 @@ parser.add_argument(
     help="Dilate the preserved foreground mask by this many pixels to protect object boundaries.",
 )
 parser.add_argument(
+    "--mask_preserve_blue_table",
+    action="store_true",
+    help="Preserve the lower-right solid blue tabletop as foreground using a targeted RGB+ROI mask.",
+)
+parser.add_argument("--mask_blue_table_min_blue", type=int, default=95)
+parser.add_argument("--mask_blue_table_min_green", type=int, default=70)
+parser.add_argument("--mask_blue_table_max_red", type=int, default=135)
+parser.add_argument("--mask_blue_table_min_blue_minus_red", type=int, default=25)
+parser.add_argument("--mask_blue_table_min_green_minus_red", type=int, default=5)
+parser.add_argument("--mask_blue_table_min_x_frac", type=float, default=0.48)
+parser.add_argument("--mask_blue_table_min_y_frac", type=float, default=0.30)
+parser.add_argument(
     "--render_antialiasing",
     choices=("inherit", "Off", "FXAA", "DLSS", "TAA", "DLAA"),
     default="DLAA",
@@ -48,6 +60,15 @@ parser.add_argument(
     "--render_translucency",
     choices=("inherit", "on", "off"),
     default="off",
+)
+parser.add_argument(
+    "--wrist_camera_update_period",
+    type=float,
+    default=0.0,
+    help=(
+        "When > 0, update left/right wrist RGB cameras at this period in seconds. "
+        "The front camera remains frame-rate because it drives the live view, depth, and mask."
+    ),
 )
 parser.add_argument(
     "--task",
@@ -130,6 +151,8 @@ def _trim_env_cfg_to_policy_sensors(env_cfg, depth_camera_name: str, include_sem
             continue
         camera_cfg.width = args_cli.camera_width
         camera_cfg.height = args_cli.camera_height
+        if name in ("left_wrist_camera", "right_wrist_camera") and args_cli.wrist_camera_update_period > 0.0:
+            camera_cfg.update_period = args_cli.wrist_camera_update_period
         if name == depth_camera_name:
             camera_cfg.data_types = ["rgb", "distance_to_image_plane"]
             if include_semantic:
@@ -224,6 +247,34 @@ def _background_mask_from_semantic(seg: np.ndarray, preserve_ids: list[int], dil
     foreground = np.isin(label_map, np.asarray(preserve_ids, dtype=np.int32))
     foreground = _dilate_binary(foreground, dilate_px)
     return ((~foreground).astype(np.uint8) * 255)
+
+
+def _blue_table_foreground_mask(
+    rgb: np.ndarray,
+    min_blue: int,
+    min_green: int,
+    max_red: int,
+    min_blue_minus_red: int,
+    min_green_minus_red: int,
+    min_x_frac: float,
+    min_y_frac: float,
+) -> np.ndarray:
+    """Target the solid blue tabletop without preserving the upper grid floor."""
+    arr = rgb.astype(np.int16)
+    red = arr[..., 0]
+    green = arr[..., 1]
+    blue = arr[..., 2]
+    height, width = rgb.shape[:2]
+    yy, xx = np.mgrid[:height, :width]
+    blue_pixels = (
+        (blue >= min_blue)
+        & (green >= min_green)
+        & (red <= max_red)
+        & ((blue - red) >= min_blue_minus_red)
+        & ((green - red) >= min_green_minus_red)
+    )
+    lower_right_roi = (xx >= int(width * min_x_frac)) & (yy >= int(height * min_y_frac))
+    return blue_pixels & lower_right_roi
 
 
 def main() -> None:
@@ -330,6 +381,18 @@ def main() -> None:
                         raise RuntimeError(f"Missing semantic segmentation for {args_cli.camera}.")
                     seg = to_numpy(semantic_group[args_cli.camera][0])
                     mask = _background_mask_from_semantic(seg, preserve_ids, args_cli.mask_dilate_px)
+                    if args_cli.mask_preserve_blue_table:
+                        blue_table_fg = _blue_table_foreground_mask(
+                            rgb,
+                            min_blue=args_cli.mask_blue_table_min_blue,
+                            min_green=args_cli.mask_blue_table_min_green,
+                            max_red=args_cli.mask_blue_table_max_red,
+                            min_blue_minus_red=args_cli.mask_blue_table_min_blue_minus_red,
+                            min_green_minus_red=args_cli.mask_blue_table_min_green_minus_red,
+                            min_x_frac=args_cli.mask_blue_table_min_x_frac,
+                            min_y_frac=args_cli.mask_blue_table_min_y_frac,
+                        )
+                        mask[blue_table_fg] = 0
                     mask_rgb = np.repeat(mask[..., None], 3, axis=-1)
                     assert mask_writer is not None
                     mask_writer.append_data(mask_rgb)
@@ -370,6 +433,7 @@ def main() -> None:
             "rendering_mode": getattr(args_cli, "rendering_mode", None),
             "render_antialiasing": args_cli.render_antialiasing,
             "render_translucency": args_cli.render_translucency,
+            "wrist_camera_update_period": args_cli.wrist_camera_update_period,
             "rgb_video": str(rgb_path),
             "depth_inverse_video": str(depth_path),
             "background_mask_video": str(mask_path) if args_cli.background_mask else None,
@@ -377,6 +441,16 @@ def main() -> None:
             "mask_preserve_classes": preserve_classes,
             "mask_preserve_ids": preserve_ids,
             "mask_dilate_px": args_cli.mask_dilate_px,
+            "mask_preserve_blue_table": args_cli.mask_preserve_blue_table,
+            "mask_blue_table_thresholds": {
+                "min_blue": args_cli.mask_blue_table_min_blue,
+                "min_green": args_cli.mask_blue_table_min_green,
+                "max_red": args_cli.mask_blue_table_max_red,
+                "min_blue_minus_red": args_cli.mask_blue_table_min_blue_minus_red,
+                "min_green_minus_red": args_cli.mask_blue_table_min_green_minus_red,
+                "min_x_frac": args_cli.mask_blue_table_min_x_frac,
+                "min_y_frac": args_cli.mask_blue_table_min_y_frac,
+            },
             "mask_coverage_mean": statistics.fmean(mask_coverage) if mask_coverage else None,
             "policy_chunk_ms": _stats(policy_chunk_ms),
             "step_ms": _stats(step_ms),

@@ -32,6 +32,7 @@ from isaaclab.utils import configclass
 ASSEMBLE_TROCAR_SEMANTIC_FILTER = [
     "class:robot",
     "class:tray",
+    "class:cart",
     "class:trocar",
     "class:trocar_device",
 ]
