@@ -144,6 +144,44 @@ python scripts/reinforcement_learning/rlinf/train.py \
   --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260508-15:49:12-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage4-resume128/test_gr00t/checkpoints/global_step_216 \
   2>&1 | tee train_pg_stage2_ac8_step64_512env_240_320_z_image_0.25_resume_gs216.log
 
+# stage 3 resume (cosmos new)
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/ray_pg_stage3 \
+ASSEMBLE_TROCAR_RANDOMIZE_LIGHTING=true \
+python scripts/reinforcement_learning/rlinf/train.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps_new_trocar_460samples \
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260519-14:39:13-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage2-ac1-0.25/test_gr00t/checkpoints/global_step_220 \
+  2>&1 | tee train_pg_stage3_ac1_step64_512env_240_320_z_image_0.25_resume_gs220.log
+
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/ray_pg_stage32 \
+ASSEMBLE_TROCAR_RANDOMIZE_LIGHTING=true \
+python scripts/reinforcement_learning/rlinf/train.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps_new_trocar_460samples \
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260520-21:48:24-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage3-ac1-0.25/test_gr00t/checkpoints/global_step_228 \
+  2>&1 | tee train_pg_stage3_ac1_step64_512env_240_320_z_image_0.25_resume_gs228.log
+
+# stage 4 resume (cosmos new)
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/ray_pg_stage4 \
+ASSEMBLE_TROCAR_RANDOMIZE_LIGHTING=true \
+python scripts/reinforcement_learning/rlinf/train.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps_new_trocar_460samples \
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260521-17:34:35-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage3-ac1-0.25/test_gr00t/checkpoints/global_step_252 \
+  2>&1 | tee train_pg_stage4_ac1_step64_512env_240_320_z_image_0.25_resume_gs252.log
+
+RAY_ADDRESS=local RAY_TMPDIR=/tmp/ray_pg_stage4 \
+ASSEMBLE_TROCAR_RANDOMIZE_LIGHTING=true \
+python scripts/reinforcement_learning/rlinf/train.py \
+  --config_path /localhome/local-pengfeig/pengfeig/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assemble_trocar/config \
+  --config_name isaaclab_ppo_gr00t_assemble_trocar_z_image \
+  --model_path /localhome/local-pengfeig/pengfeig/models/gr00t/sim6_gr00t_n15_50ksteps_new_trocar_460samples \
+  --resume_dir /localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260522-19:57:24-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage4-ac1-0.25/test_gr00t/checkpoints/global_step_328 \
+  2>&1 | tee train_pg_stage4_ac1_step64_512env_240_320_z_image_0.25_resume_gs328.log
+
 # play
 RAY_ADDRESS=local RAY_TMPDIR=/tmp/play_default \
 python scripts/reinforcement_learning/rlinf/play.py \

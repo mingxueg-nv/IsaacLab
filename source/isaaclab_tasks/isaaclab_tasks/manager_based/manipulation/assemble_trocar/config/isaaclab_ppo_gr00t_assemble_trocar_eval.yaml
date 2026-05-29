@@ -17,7 +17,7 @@ cluster:
       actor,env,rollout: all
 
 runner:
-  ckpt_path: "/localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260508-15:49:12-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage4-resume128/test_gr00t/checkpoints/global_step_216/actor/model_state_dict/full_weights.pt"
+  ckpt_path: "/localhome/local-pengfeig/pengfeig/IsaacLab/scripts/reinforcement_learning/rlinf/logs/rlinf/20260526-22:37:44-Isaac-Assemble-Trocar-G129-Dex3-RLinf-MultiModal-v0-stage4-ac1-0.25/test_gr00t/checkpoints/global_step_336/actor/model_state_dict/full_weights.pt"
   task_type: embodied
   logger:
     log_path: "../results"
@@ -179,7 +179,7 @@ env:
 
   eval:
     env_type: isaaclab
-    total_num_envs: 8
+    total_num_envs: 128
     auto_reset: False
     ignore_terminations: False
     one_episode_per_env: True

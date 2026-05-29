@@ -332,7 +332,7 @@ cosmos:
   cache_enabled: false  # false = always call Z-Image service and skip cache read/write
   host: "localhost"
   ports: [5657, 5658, 5659, 5660, 5661, 5662, 5663, 5664]
-  probability: 0.75
+  probability: 0.25
   grid_mode: true  # true = tile 3 camera views into 2x2 grid (3x fewer service calls)
   batch_requests: true  # true = send RLinf [B,T,C,H,W] mini-batches as one Z-Image request
   debug_dir: "/localhome/local-pengfeig/pengfeig/IsaacLab/outputs/z_image_rlinf_runtime_debug"  # optional directory for input/control/mask/output PNGs
