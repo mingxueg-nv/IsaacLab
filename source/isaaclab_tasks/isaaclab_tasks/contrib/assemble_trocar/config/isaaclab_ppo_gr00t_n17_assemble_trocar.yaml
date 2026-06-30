@@ -1,0 +1,415 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# GR00T N1.7 + RLinf PPO config for Isaac-Assemble-Trocar-G129-Dex3-v0.
+#
+# Key differences from the N1.5 variant (`isaaclab_ppo_gr00t_assemble_trocar.yaml`):
+#   * actor.model.model_type: "gr00t_n1d7"     (RLinf's SupportedModel enum key;
+#                                               routes to rlinf.models.embodiment.gr00t_1_7)
+#   * actor.model.num_action_chunks: 16        (matches ckpt's modality_configs.action.delta_indices = [0..15])
+#   * obs_converter_type: "passthrough"        (assemble_trocar does its own mapping in gr00t_mapping;
+#                                               passthrough lets it survive to GR00T as-is)
+#   * embodiment_tag: "new_embodiment"         (matches embodiment_id.json -> 10)
+#   * embodiment_tag_id: 10                    (N1.7 NEW_EMBODIMENT projector slot, was 31 in N1.5)
+#   * model_path: your N1.7 SFT ckpt           (Qwen3 backbone, NOT loadable by N1.5/N1.6 adapter)
+#   * num_action_chunks / action_dim derived from ckpt's experiment_cfg/config.yaml
+#
+# Override on the command line if needed:
+#   python scripts/reinforcement_learning/rlinf/train.py \
+#     --config_name isaaclab_ppo_gr00t_n17_assemble_trocar \
+#     actor.model.model_path=/path/to/your/n17/ckpt
+
+defaults:
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+cluster:
+  num_nodes: 1
+  component_placement:
+      # Use "all" so the same yaml runs on 1-GPU dev boxes (H20 etc.) and
+      # multi-GPU clusters alike. The previous "0,1" hard-coded 2 GPUs and
+      # raises AssertionError on single-GPU machines.
+      actor,env,rollout: all
+
+# Weight syncer config (REQUIRED in RLinf >=0.3, was added after the 0.2.0dev2
+# template that the N1.5 yaml in this folder was originally built from).
+#
+# Both EmbodiedFSDPActor and MultiStepRolloutWorker do
+#   weight_syncer_cfg = OmegaConf.select(cfg, "weight_syncer")
+#   assert weight_syncer_cfg is not None
+# at __init__ time. Missing this block -> both workers die in __init__ before
+# any training/inference happens.
+#
+# Inlined (rather than via `defaults: - weight_syncer/patch_syncer@weight_syncer`)
+# to avoid depending on EMBODIED_PATH / Hydra searchpath plumbing — keeps this
+# yaml self-contained and runnable from IsaacLab's script entrypoint.
+#
+# Mirrors RLinf's official GR00T example
+# (examples/embodiment/config/weight_syncer/patch_syncer.yaml): actor and
+# rollout share the same GPU (component_placement above), so we keep snapshot
+# and transport on CPU and rely on patch + delta encoding to keep the per-step
+# weight transfer cheap.
+weight_syncer:
+  type: patch
+  patch:
+    snapshot_device: cpu
+    transport_device: cpu
+    delta_encoding: True
+    compression: none
+    init_sync:
+      enabled: True
+      prefixes: null
+      bucket_size: 134217728
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "test_gr00t_n17"
+    logger_backends: ["tensorboard"] # wandb, swanlab
+
+  max_epochs: 2000  # bumped 2026-06-21: was 1000 -- extend past natural end to test rollout_epoch=2 + larger batch effect
+  max_steps: -1
+
+  only_eval: False
+  eval_policy_path: null
+  val_check_interval: -1
+  save_interval: 2
+  seq_length: 4096
+  max_prompt_length: 30
+
+  resume_dir: null
+
+algorithm:
+  normalize_advantages: True
+  kl_penalty: kl
+  group_size: 1
+  reward_coef: 1.0
+  rollout_epoch: 2  # reverted 2026-06-22: was 2; chain-2 plateau & mild drift -> back to 1 (update_epoch stays at 2)
+  eval_rollout_epoch: 1
+
+  reward_type: chunk_level
+  logprob_type: chunk_level
+  entropy_type: chunk_level
+
+  # Job 326629 (update_epoch=4, kl_beta=0.0) ran 16 steps with success_once
+  # stuck in a 0.2-1.4% oscillation around the 3.33% SFT baseline. PPO health
+  # metrics looked fine (approx_kl ~0.005-0.008, clip_fraction ~5%), so the
+  # stall was not "policy drifted too far". Still, aligning with the upstream
+  # RLinf N1.7 reference (examples/embodiment/config/libero_spatial_ppo_gr00t_n1d7.yaml)
+  # which uses update_epoch=1 / kl_beta=0.01 removes two known footguns:
+  #   * update_epoch=1 stops re-using each rollout 4 times on an already-
+  #     drifting policy (later epochs use stale on-policy data)
+  #   * kl_beta=0.01 adds a soft anchor to the previous policy so noisy
+  #     advantage updates can't accumulate into directional drift
+  # This change alone is unlikely to break out of the sparse-reward noise
+  # floor (that may need dense reward shaping), but it removes the most
+  # obvious "anti best-practice" knobs from the table.
+  update_epoch: 2  # bumped 2026-06-21: was 1 -- 2x gradient updates per rollout for better sample reuse
+  adv_type: gae
+  loss_type: actor_critic
+  loss_agg_func: "token-mean"
+  kl_beta: 0.01  # bumped 2026-06-24: 0.0->0.01 restored SFT anchor; pair with lr=1e-5 to give safety while policy moves
+  entropy_bonus: 0
+  clip_ratio_high: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_c: 3.0
+  value_clip: 0.2
+  huber_delta: 10.0
+
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  filter_rewards: False
+  rewards_lower_bound: 0.1
+  rewards_upper_bound: 0.9
+
+  sampling_params:
+    do_sample: True
+    temperature_train: 1.0
+    temperature_eval: 0.6
+    top_k: 50
+    top_p: 1.0
+    repetition_penalty: 1.0
+    add_BOS: False
+
+  length_params:
+    max_new_token: null
+    max_length: 1024
+    min_length: 1
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+env:
+  group_name: "EnvGroup"
+  channel:
+    name: "env_buffer_list"
+    queue_name: "obs_buffer"
+    queue_size: 0
+  enable_offload: False
+
+  train:
+    env_type: isaaclab
+    total_num_envs: 128
+    auto_reset: True
+    ignore_terminations: False
+    use_rel_reward: True
+    seed: 0
+    group_size: 1
+    reward_coef: 1.0
+    use_fixed_reset_state_ids: True
+    max_steps_per_rollout_epoch: 256  # bumped 2026-06-22: 192->256 to match max_episode_steps 384->512
+    max_episode_steps: 512  # bumped 2026-06-22: 384->512 to give stage 2->3 ~150 steps window (was only 60-80)
+    video_cfg:
+      save_video: False
+      info_on_video: True
+      video_base_dir: ${runner.logger.log_path}/video/train
+    init_params:
+      id: "Isaac-Assemble-Trocar-G129-Dex3-v0"
+      num_envs: null
+      max_episode_steps: ${env.train.max_episode_steps}
+      task_description: "install trocar from box"
+
+    # ========================================================================
+    # IsaacLab -> RLinf -> GR00T (N1.7) observation / action mapping
+    # ========================================================================
+    isaaclab: &isaaclab_config
+      task_description: "install trocar from box"
+
+      # --- IsaacLab -> RLinf observation mapping (unchanged from N1.5) ---
+      main_images: "front_camera"
+      extra_view_images:
+        - "left_wrist_camera"
+        - "right_wrist_camera"
+      states:
+        - key: "robot_joint_state"
+          slice: [15, 29]  # G129 shoulder joints (14 dims)
+        - key: "robot_dex3_joint_state"
+          # full tensor (14 dims)
+
+      # --- RLinf -> GR00T format (N1.7 expects 3-cam + 4-key state, NO state. prefix) ---
+      gr00t_mapping:
+        video:
+          main_images: "video.room_view"
+          extra_view_images:
+            - "video.left_wrist_view"
+            - "video.right_wrist_view"
+        state:
+          # 14 shoulder + 14 dex3 = 28 dims, split into 4 keys matching
+          # ckpt experiment_cfg/config.yaml modality_configs.new_embodiment.state.modality_keys.
+          # IMPORTANT: keys must be BARE (no "state." prefix). N1.7's
+          # state_action_processor.apply_state looks up keys verbatim from the ckpt's
+          # modality_keys, which are bare ("left_arm", not "state.left_arm").
+          # (Video keys are tolerated either way -- N1.7's apply_transforms rebuilds
+          # images_dict using ckpt req_img_keys directly, dropping any "video." prefix.)
+          - gr00t_key: "left_arm"
+            slice: [0, 7]
+          - gr00t_key: "right_arm"
+            slice: [7, 14]
+          - gr00t_key: "left_hand"
+            slice: [14, 21]
+          - gr00t_key: "right_hand"
+            slice: [21, 28]
+
+      # --- GR00T -> IsaacLab action conversion ---
+      # IMPORTANT: N1.7 ckpt was SFT-trained with mixed action representation:
+      #   * left_arm, right_arm  -> RELATIVE (delta-joint)
+      #   * left_hand, right_hand -> ABSOLUTE (target-joint)
+      # The default `passthrough` converter in rlinf.models.embodiment.gr00t_1_7
+      # forwards the model's [B, T, 28] output straight to IsaacLab; the env
+      # wrapper is responsible for adding arm deltas to current joint pos and
+      # taking hands as targets verbatim. See gr00t_config.py for the per-key
+      # representation declaration that drives unnormalization.
+      action_mapping:
+        prefix_pad: 15  # Pad zeros at front for G129 body joints (not controlled)
+        suffix_pad: 0
+
+      # --- GR00T N1.7 model configuration ---
+      obs_converter_type: "passthrough"      # was "dex3" for N1.5; passthrough is the right N1.7 default
+      embodiment_tag: "new_embodiment"
+      embodiment_tag_id: 10                  # was 31 for N1.5; N1.7 NEW_EMBODIMENT slot in embodiment_id.json
+      # data_config_class intentionally omitted on the N1.7 path:
+      # rlinf.models.embodiment.gr00t_1_7.get_model loads modality_config
+      # straight from the ckpt's experiment_cfg/config.yaml. Setting this
+      # field would only re-trigger the legacy N1.5 monkeypatch in
+      # isaaclab_contrib/rl/rlinf/extension.py (which is now guarded against
+      # this case but better to not even tempt it).
+
+  eval:
+    env_type: isaaclab
+    total_num_envs: 64
+    auto_reset: True
+    ignore_terminations: True
+    use_rel_reward: True
+    seed: 0
+    group_size: 1
+    reward_coef: 1.0
+    use_fixed_reset_state_ids: True
+    max_steps_per_rollout_epoch: 512  # bumped 2026-06-23: 384->512 to align with max_episode_steps so each rollout = 1 full episode (one mp4 per episode)
+    max_episode_steps: 512  # bumped 2026-06-22: 384->512 to give stage 2->3 ~150 steps window (was only 60-80)
+    video_cfg:
+      save_video: True
+      info_on_video: True
+      video_base_dir: ${runner.logger.log_path}/video/eval
+    init_params:
+      id: "Isaac-Assemble-Trocar-G129-Dex3-Eval-v0"
+      num_envs: null
+      max_episode_steps: ${env.eval.max_episode_steps}
+      task_description: "install trocar from box"
+    isaaclab: *isaaclab_config
+
+# ---------------------------------------------------------------------------
+# Rollout
+# ---------------------------------------------------------------------------
+rollout:
+  group_name: "RolloutGroup"
+  channel:
+    name: ${env.channel.name}
+    queue_name: "action_buffer"
+    queue_size: 0
+  mode: "colocate"
+  backend: "huggingface"
+  enable_offload: True
+  pipeline_stage_num: 1
+
+  model:
+    # N1.7 SFT ckpt; update to wherever your trained weights live.
+    model_path: "/localhome/local-mingxueg/mingxue/models/GR00tN1_7_sim_assemble_trocar/tune_visual/checkpoint-30000"
+    precision: ${actor.model.precision}
+    obs_converter_type: ${env.train.isaaclab.obs_converter_type}
+    embodiment_tag: ${env.train.isaaclab.embodiment_tag}
+
+# ---------------------------------------------------------------------------
+# Actor
+# ---------------------------------------------------------------------------
+actor:
+  group_name: "ActorGroup"
+  channel:
+    name: ${env.channel.name}
+    queue_name: "replay_buffer"
+    queue_size: 0
+  training_backend: "fsdp"
+  num_gpus: 1                               # required by RLinf 0.3 FSDP world-size accounting
+  # RLinf asserts: global_batch_size % (micro_batch_size * actor_world_size) == 0
+  # actor_world_size == #GPUs visible to the actor (8 on the H100 cluster).
+  #
+  # Sizing rationale on 8x H100 80GB with colocate placement (actor + env +
+  # rollout share each GPU): job 323641 OOM'd at micro_batch_size=64 because
+  # the FSDP actor forward took ~65GB while rollout + Isaac Sim were already
+  # holding ~12GB on the same card. 32 cuts the actor's per-step activation
+  # memory in half (~33GB) which leaves enough headroom for the colocated
+  # env / rollout processes. global_batch_size kept at 1024 so each PPO
+  # update still sees the same number of samples; we just do 4 grad accum
+  # steps (32 * 8 = 256 per step) instead of 2.
+  micro_batch_size: 32  # reverted 2026-06-21: 64 OOM'd in Qwen3 fwd (PyTorch 60.7GiB + Isaac Sim 11.2GiB > 80GiB). Back to known-stable 32.
+  global_batch_size: 1024
+  seed: 1234
+  enable_offload: False
+
+  model:
+    # Mirrors RLinf's N1.6 reference model template
+    # (examples/embodiment/config/model/gr00t_16.yaml), with the model_type
+    # bumped to N1.7. RLinf's own gr00t_17.yaml on this branch is a
+    # one-line copy of the N1.6 template (model_type only), so N1.6 is the
+    # ground truth for everything else (padding_value, rl_head_config layout,
+    # FSDP wrap classes...).
+    # NOTE: the registered SupportedModel key is "gr00t_n1d7" (see
+    # RLinf/rlinf/config.py:108) — NOT "gr00t_1_7". The latter is only the
+    # Python package directory name. Using "gr00t_1_7" here raises
+    # NotImplementedError in validate_embodied_cfg.
+    model_type: "gr00t_n1d7"                # routes to rlinf.models.embodiment.gr00t_1_7
+    model_path: ${rollout.model.model_path}
+    precision: "bf16"
+    trust_remote_code: True
+    is_lora: false
+    action_dim: 28                          # 4 keys x 7 dims, derived from ckpt statistics.json
+    num_action_chunks: 16                   # must match SFT ckpt's action.delta_indices = [0..15]
+    env_execute_chunks: 4                   # execute first 4 of 16 predicted chunks, then replan for tighter insertion control
+    gradient_checkpointing: true            # trade compute for memory; avoids OOM on colocated H100
+    denoising_steps: 4                      # matches ckpt num_inference_timesteps
+    obs_converter_type: ${env.train.isaaclab.obs_converter_type}
+    embodiment_tag: ${env.train.isaaclab.embodiment_tag}
+    add_value_head: True
+    # FSDP must not split these modules across ranks. List mirrors N1.6 ref
+    # (Qwen3 backbone, Siglip2 vision encoder, flow-matching action head, and
+    # the value/noise heads RLinf attaches on top for PPO).
+    no_split_modules:
+      - "Qwen3DecoderLayer"
+      - "Siglip2EncoderLayer"
+      - "FlowMatchingActionHeadForRLActionPrediction"
+      - "TimestepEncoder"
+      - "TimestepEmbedding"
+      - "ValueHead"
+      - "ExploreNoiseNet"
+    rl_head_config:
+      joint_logprob: False
+      noise_method: "flow_sde"
+      ignore_last: False
+      safe_get_logprob: False
+      noise_anneal: False
+      noise_params: [0.7, 0.3, 400]
+      noise_level: 0.3
+      add_value_head: ${actor.model.add_value_head}
+      chunk_critic_input: False
+      detach_critic_input: True
+      disable_dropout: True
+      use_vlm_value: False
+      value_vlm_mode: "mean_token"
+      # 570 is the N1.6/N1.7 reference value (was 850 in the N1.5 yaml we
+      # originally branched from). padding_value controls how many extra tokens
+      # the action head reserves; using a value that mismatches the SFT ckpt
+      # silently corrupts the head's output layout.
+      padding_value: 570
+
+  optim:
+    lr: 1.0e-5  # bumped 2026-06-24: 5e-6->1e-5 to break frozen-policy plateau (ratio stuck at 1.000)
+    value_lr: 1.0e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 0.01
+    clip_grad: 1.0
+    critic_warmup_steps: 0
+
+  # FSDP config — kept minimal, exactly matching RLinf's N1.6 reference
+  # (examples/embodiment/config/libero_spatial_ppo_gr00t_16.yaml). The list of
+  # wrap classes mirrors actor.model.no_split_modules so FSDP boundaries align
+  # with the modules the model itself treats as atomic.
+  fsdp_config:
+    strategy: "fsdp"
+    transformer_layer_cls_to_wrap:
+      - "Qwen3DecoderLayer"
+      - "Siglip2EncoderLayer"
+      - "FlowMatchingActionHeadForRLActionPrediction"
+      - "TimestepEncoder"
+      - "TimestepEmbedding"
+      - "ValueHead"
+      - "ExploreNoiseNet"
+    # N1.7 has frozen backbone (Qwen3 LLM + Siglip2 ViT, requires_grad=False)
+    # mixed with trainable RL heads (action head + value head + explore noise net,
+    # requires_grad=True). Default FSDP (use_orig_params=False) flattens each
+    # auto-wrap-policy bucket into a single FlatParameter, which crashes with
+    # "Must flatten tensors with uniform requires_grad" when frozen and trainable
+    # params land in the same bucket. Setting use_orig_params=True keeps the
+    # original nn.Parameter objects (FSDP shards them individually rather than
+    # flattening), which is the standard fix for partial-freeze fine-tuning and
+    # only adds a few % overhead vs. flat-param mode.
+    use_orig_params: true
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False

@@ -1,14 +1,24 @@
-# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+
+# http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """
 public camera configuration
 include the basic configuration for different types of cameras, support scene-specific parameter customization
 """
 
-from collections.abc import Sequence
+from typing import Optional, Sequence, Tuple
 
 import isaaclab.sim as sim_utils
 from isaaclab.sensors import CameraCfg
@@ -27,15 +37,15 @@ class CameraBaseCfg:
         cls,
         prim_path: str = "/World/envs/env_.*/Robot/d435_link/front_cam",
         update_period: float = 0.02,
-        height: int = 480,
-        width: int = 640,
+        height: int = 240,
+        width: int = 320,
         focal_length: float = 7.6,
         focus_distance: float = 400.0,
         horizontal_aperture: float = 20.0,
-        clipping_range: tuple[float, float] = (0.1, 1.0e5),
-        pos_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot_offset: tuple[float, float, float, float] = (0.5, -0.5, 0.5, -0.5),
-        data_types: Sequence[str] | None = None,
+        clipping_range: Tuple[float, float] = (0.1, 1.0e5),
+        pos_offset: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        rot_offset: Tuple[float, float, float, float] = (-0.5, 0.5, -0.5, 0.5),
+        data_types: Optional[Sequence[str]] = None,
     ) -> CameraCfg:
         """Get a pinhole camera configuration.
 
@@ -83,12 +93,8 @@ class CameraPresets:
 
     @classmethod
     def g1_front_camera(cls, **overrides) -> CameraCfg:
-        params = {
-            "height": 224,
-            "width": 224,
-            "focal_length": 10.5,
-            "horizontal_aperture": 14.25,  # Match original vertical FOV after crop
-        }
+        """front camera configuration"""
+        params = {"focal_length": 12.0}
         params.update(overrides)
         return CameraBaseCfg.get_camera_config(**params)
 
@@ -97,16 +103,16 @@ class CameraPresets:
         """left wrist camera configuration"""
         params = {
             "prim_path": "/World/envs/env_.*/Robot/left_hand_camera_base_link/left_wrist_camera",
-            "height": 224,
-            "width": 224,
+            "height": 240,
+            "width": 320,
             "update_period": 0.02,
             "data_types": ["rgb"],
             "focal_length": 12.0,
             "focus_distance": 400.0,
-            "horizontal_aperture": 14.25,  # Match original vertical FOV after crop
+            "horizontal_aperture": 20.0,
             "clipping_range": (0.1, 1.0e5),
             "pos_offset": (-0.04012, -0.07441, 0.15711),
-            "rot_offset": (0.00539, 0.86024, 0.0424, 0.50809),
+            "rot_offset": (0.86024, 0.0424, 0.50809, 0.00539),
         }
         params.update(overrides)
         return CameraBaseCfg.get_camera_config(**params)
@@ -116,16 +122,16 @@ class CameraPresets:
         """right wrist camera configuration"""
         params = {
             "prim_path": "/World/envs/env_.*/Robot/right_hand_camera_base_link/right_wrist_camera",
-            "height": 224,
-            "width": 224,
+            "height": 240,
+            "width": 320,
             "update_period": 0.02,
             "data_types": ["rgb"],
             "focal_length": 12.0,
             "focus_distance": 400.0,
-            "horizontal_aperture": 14.25,  # Match original vertical FOV after crop
+            "horizontal_aperture": 20.0,
             "clipping_range": (0.1, 1.0e5),
             "pos_offset": (-0.04012, 0.07441, 0.15711),
-            "rot_offset": (0.00539, 0.86024, 0.0424, 0.50809),
+            "rot_offset": (0.86024, 0.0424, 0.50809,0.00539),
         }
         params.update(overrides)
         return CameraBaseCfg.get_camera_config(**params)

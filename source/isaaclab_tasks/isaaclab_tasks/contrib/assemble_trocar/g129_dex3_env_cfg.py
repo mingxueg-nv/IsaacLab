@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+import os
+
 from isaaclab_physx.physics import PhysxCfg
 
 import isaaclab.envs.mdp as base_mdp
@@ -75,7 +77,31 @@ offset_dict = {
     "right_elbow_joint": -0.3,
 }
 
-HEALTHCARE_S3 = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/Healthcare/0.5.0/132c82d"
+# Healthcare USD assets resolution.
+#
+# By default we pull from the public Omniverse S3 bucket, but on a multi-GPU
+# cluster having all 8 EnvGroup workers race to fetch (and mmap) the same set
+# of USD files via HTTP causes intermittent SIGSEGV in
+# Sdf_CrateFile::_MmapStream::Read (rank-6 crash, job 323609 logs). To avoid
+# that we let an operator pre-mirror the bucket onto a shared filesystem and
+# point ASSET_LOCAL at the local mirror root. The check here verifies that
+# scene03.usd actually lives under that root before flipping over, so a stale
+# / partial mirror falls back to S3 instead of silently erroring.
+_HEALTHCARE_S3_REMOTE = (
+    "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
+    "/Assets/Isaac/Healthcare/0.5.0/132c82d"
+)
+_ASSET_LOCAL = os.environ.get("ASSET_LOCAL", "").strip()
+if _ASSET_LOCAL and os.path.isfile(
+    os.path.join(_ASSET_LOCAL, "Props", "LightWheel", "scene03.usd")
+):
+    HEALTHCARE_S3 = _ASSET_LOCAL
+    print(
+        f"[assemble_trocar] using local USD mirror: ASSET_LOCAL={_ASSET_LOCAL}",
+        flush=True,
+    )
+else:
+    HEALTHCARE_S3 = _HEALTHCARE_S3_REMOTE
 USD_ROOT = f"{HEALTHCARE_S3}/Props/LightWheel"
 
 
@@ -88,9 +114,9 @@ class AssembleTrocarSceneCfg(InteractiveSceneCfg):
         init_pos=(-1.84919, 1.94, 0.81168), init_rot=(0.0, 0.0, 0.0, 1.0)
     )
     # add camera configuration
-    front_camera = CameraPresets.g1_front_camera()
-    left_wrist_camera = CameraPresets.left_dex3_wrist_camera()
-    right_wrist_camera = CameraPresets.right_dex3_wrist_camera()
+    front_camera = CameraPresets.g1_front_camera(focal_length=10.5)
+    left_wrist_camera = CameraPresets.left_dex3_wrist_camera(focal_length=12)
+    right_wrist_camera = CameraPresets.right_dex3_wrist_camera(focal_length=12)
 
     scene = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Scene",
@@ -230,7 +256,7 @@ class TerminationsCfg:
         time_out=False,  # This is a success termination, not a failure
         params={
             "print_log": False,
-            "success_stage": 4,
+            "success_stage": 1,  # bumped 2026-06-22: was 2 (tip align); now training stage 3 (insertion: parallel + center close < 3cm)
         },
     )
     object_drop = DoneTerm(
@@ -255,10 +281,20 @@ class RewardsCfg:
     reward term reads it, removing implicit ordering dependencies.
     """
 
-    # Stage machine — weight=0, runs before all reward terms to update task stage
+    # Stage machine — runs before all reward terms to update task stage.
+    # NOTE: weight is intentionally a tiny non-zero value (NOT 0.0) because
+    # IsaacLab's RewardManager.compute() has a `if term_cfg.weight == 0.0: continue`
+    # micro-optimization that would otherwise skip this term entirely, meaning
+    # the task stage would never advance and ALL downstream sparse rewards
+    # (lift / tip_alignment / insertion / placement) would always read stage=0
+    # and stay at 0 forever. update_task_stage itself returns torch.zeros(...),
+    # so any non-zero weight contributes exactly 0 to total reward.
+    # print_log=True dumps per-env trocar Z (vs the lift_threshold target) every 20
+    # steps so we can verify whether reward=0 is "policy isn't lifting" vs
+    # "policy lifts but the env's 15cm threshold is too strict".
     update_stage = RewTerm(
         func=mdp.update_task_stage,
-        weight=0.0,
+        weight=1.0e-9,
         params={
             "asset_cfg1": SceneEntityCfg("trocar_1"),
             "asset_cfg2": SceneEntityCfg("trocar_2"),
@@ -271,7 +307,7 @@ class RewardsCfg:
             "placement_x_max": -1.4,
             "placement_y_min": 1.5,
             "placement_y_max": 1.8,
-            "print_log": False,
+            "print_log": True,
         },
     )
 
@@ -385,7 +421,11 @@ class G1AssembleTrocarEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     curriculum = None
 
-    num_rerenders_on_reset: int = 1
+    # Match other visuomotor tasks (stack/Franka, pick_place/GR1T2, etc.) which
+    # all use 3. With = 1 the first rendered observation can still show the
+    # pre-init joint state because DLSS/DLAA needs >=2 frames to converge -- this
+    # is exactly the "first video frame doesn't match init_state" symptom.
+    num_rerenders_on_reset: int = 3
 
     def __post_init__(self):
         """Post initialization."""

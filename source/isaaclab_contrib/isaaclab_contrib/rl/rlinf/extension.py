@@ -50,7 +50,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 import yaml
-from rlinf.models.embodiment.gr00t import embodiment_tags
 
 if TYPE_CHECKING:
     import torch
@@ -61,6 +60,9 @@ _registered = False
 
 # Cache for YAML config (loaded once per process)
 _full_cfg_cache: dict | None = None
+
+# one-shot init-pose debug flag (TEMP: remove after verification)
+_pose_logged: bool = False
 
 
 def register() -> None:
@@ -122,6 +124,49 @@ def _get_isaaclab_cfg() -> dict:
     return _load_full_cfg().get("env", {}).get("train", {}).get("isaaclab", {})
 
 
+def _get_model_type() -> str:
+    """Return ``actor.model.model_type`` from the cached YAML config.
+
+    Falls back to ``"gr00t"`` (N1.5) for backwards compatibility with configs
+    that predate the N1.7 split.
+    """
+    return (
+        _load_full_cfg()
+        .get("actor", {})
+        .get("model", {})
+        .get("model_type", "gr00t")
+    )
+
+
+def _is_gr00t_n17(model_type: str | None = None) -> bool:
+    """Return True if the active config is for GR00T N1.7 (a.k.a. ``gr00t_1_7``)."""
+    if model_type is None:
+        model_type = _get_model_type()
+    return model_type in ("gr00t_1_7", "gr00t_17", "gr00t_n1d7")
+
+
+def _get_embodiment_tags_module():
+    """Return the RLinf ``embodiment_tags`` module that matches ``model_type``.
+
+    In the current RLinf codebase, embodiment_tags lives under
+    ``rlinf.models.embodiment.gr00t.embodiment_tags`` for all model versions
+    (N1.5, N1.6, N1.7). The gr00t_n1d7 get_model patches
+    ``gr00t.data.embodiment_tags`` from this same module.
+    """
+    from rlinf.models.embodiment.gr00t import embodiment_tags as _et
+    return _et
+
+
+def _get_simulation_io_module():
+    """Return the RLinf ``simulation_io`` module that matches ``model_type``.
+
+    In the current RLinf codebase, simulation_io lives under
+    ``rlinf.models.embodiment.gr00t.simulation_io`` for all model versions.
+    """
+    from rlinf.models.embodiment.gr00t import simulation_io as _sio
+    return _sio
+
+
 def _patch_embodiment_tags(cfg: dict) -> None:
     """Add custom embodiment tag to RLinf's EmbodimentTag enum and mapping if needed.
 
@@ -142,6 +187,12 @@ def _patch_embodiment_tags(cfg: dict) -> None:
     # fine-tuning on custom robots.
     embodiment_tag = cfg.get("embodiment_tag", "new_embodiment")
     tag_id = cfg.get("embodiment_tag_id", 31)
+
+    # Pick the right embodiment_tags module for the active model_type. N1.5
+    # and N1.7 maintain independent copies; patching the wrong one silently
+    # fails (the model's tokenizer would then map the custom tag to the
+    # default projector slot or raise at load time).
+    embodiment_tags = _get_embodiment_tags_module()
 
     # If tag is already in registry (native or previously added), skip
     if embodiment_tag in embodiment_tags.EMBODIMENT_TAG_MAPPING:
@@ -178,6 +229,19 @@ def _patch_gr00t_get_model(cfg: dict) -> None:
     if not data_config_class:
         logger.info("No data_config_class specified, using RLinf's default get_model")
         return
+
+    # N1.7 removed gr00t.experiment.data_config (and BaseDataConfig /
+    # load_data_config / DATA_CONFIG_MAP with it). The monkeypatch below is
+    # hard-wired to the N1.5 GR00T_N1_5_ForRLActionPrediction path and cannot
+    # apply against N1.7. If a user accidentally leaves data_config_class set
+    # in an N1.7 yaml, refuse loudly rather than silently importing N1.5 code.
+    if _is_gr00t_n17():
+        raise RuntimeError(
+            "data_config_class is set in an N1.7 (gr00t_1_7) config; this is a "
+            "legacy N1.5-only knob. Remove data_config_class from the YAML — "
+            "the N1.7 adapter loads modality_config straight from the ckpt's "
+            "experiment_cfg/config.yaml."
+        )
 
     import rlinf.models.embodiment.gr00t as rlinf_gr00t_mod
 
@@ -271,22 +335,44 @@ def _register_gr00t_converters(cfg: dict) -> None:
 
     Reads ``obs_converter_type`` from the YAML config (``env.train.isaaclab.obs_converter_type``)
     and registers the corresponding observation and action conversion functions into
-    RLinf's ``simulation_io`` registry.
+    RLinf's ``simulation_io`` registry that matches ``actor.model.model_type``.
+
+    The N1.5 (``rlinf.models.embodiment.gr00t.simulation_io``) and N1.7
+    (``rlinf.models.embodiment.gr00t_1_7.simulation_io``) modules each carry an
+    independent ``OBS_CONVERSION`` / ``ACTION_CONVERSION`` dict. The N1.7
+    action-model resolves its converter against the gr00t_1_7 module at
+    ``__init__`` time, so we must register there for the N1.7 path.
 
     Args:
         cfg: The IsaacLab-specific configuration dictionary (``env.train.isaaclab``).
     """
-    from rlinf.models.embodiment.gr00t import simulation_io
-
-    obs_converter_type = cfg.get("obs_converter_type", "dex3")
+    simulation_io = _get_simulation_io_module()
+    # N1.5 default is "dex3"; N1.7 yamls use "passthrough" (the action mapping
+    # lives in extension.py and is driven by the yaml's gr00t_mapping block).
+    default_converter = "passthrough" if _is_gr00t_n17() else "dex3"
+    obs_converter_type = cfg.get("obs_converter_type", default_converter)
 
     if obs_converter_type not in simulation_io.OBS_CONVERSION:
         simulation_io.OBS_CONVERSION[obs_converter_type] = _convert_isaaclab_obs_to_gr00t
-        logger.info(f"Registered obs converter: {obs_converter_type}")
+        logger.info(
+            f"Registered obs converter '{obs_converter_type}' into "
+            f"{simulation_io.__name__}"
+        )
 
-    if obs_converter_type not in simulation_io.ACTION_CONVERSION:
-        simulation_io.ACTION_CONVERSION[obs_converter_type] = _convert_gr00t_to_isaaclab_action
-        logger.info(f"Registered action converter: {obs_converter_type}")
+    model_type = _get_model_type()
+    if model_type in ("gr00t_1_7", "gr00t_17", "gr00t_n1d7"):
+        action_dict = simulation_io.ACTION_CONVERSION_N1D7
+    elif model_type in ("gr00t_n1d6", "gr00t_1_6"):
+        action_dict = simulation_io.ACTION_CONVERSION_N1D6
+    else:
+        action_dict = simulation_io.ACTION_CONVERSION_N1D5
+
+    if obs_converter_type not in action_dict:
+        action_dict[obs_converter_type] = _convert_gr00t_to_isaaclab_action
+        logger.info(
+            f"Registered action converter '{obs_converter_type}' into "
+            f"{simulation_io.__name__} (dict for {model_type})"
+        )
 
 
 def _convert_isaaclab_obs_to_gr00t(env_obs: dict) -> dict:
@@ -338,10 +424,11 @@ def _convert_isaaclab_obs_to_gr00t(env_obs: dict) -> dict:
                 gr00t_key = spec.get("gr00t_key")
                 slice_range = spec.get("slice", [0, states_np.shape[-1]])
                 if gr00t_key:
-                    groot_obs[gr00t_key] = states_np[:, :, slice_range[0] : slice_range[1]]
+                    full_key = f"state.{gr00t_key}" if not gr00t_key.startswith("state.") else gr00t_key
+                    groot_obs[full_key] = states_np[:, :, slice_range[0] : slice_range[1]]
 
     # Pass through task descriptions
-    groot_obs["annotation.human.action.task_description"] = env_obs.get("task_descriptions", [])
+    groot_obs["annotation.human.task_description"] = env_obs.get("task_descriptions", [])
 
     return groot_obs
 
@@ -497,6 +584,113 @@ def _create_generic_env_wrapper(task_id: str) -> type:
 
                 env = gym.make(self.isaaclab_env_id, cfg=isaac_env_cfg, render_mode="rgb_array").unwrapped
 
+                # Fix stale first camera frame after reset (mirrors the working
+                # GR00T 1.5 extension): pump one Kit frame without advancing
+                # physics, force sensors to re-read, recompute observations.
+                import omni.kit.app as _kit_app_mod
+                _app = _kit_app_mod.get_app()
+                _original_reset = env.reset
+                _diag = [0]
+
+                def _patched_reset(*args, **kwargs):
+                    obs, extras = _original_reset(*args, **kwargs)
+                    try:
+                        import isaaclab_physx.renderers.isaac_rtx_renderer_utils as _rtx_utils
+                    except Exception:
+                        _rtx_utils = None
+                    # Aggressively flush the RTX render pipeline.
+                    # The annotator data lags app.update() by >= 1 frame,
+                    # so we pump many frames to guarantee convergence.
+                    env.sim.set_setting("/app/player/playSimulations", False)
+                    for _flush_i in range(10):
+                        if _rtx_utils is not None:
+                            _rtx_utils._last_render_update_key = (0, -1)
+                        _app.update()
+                    env.sim.set_setting("/app/player/playSimulations", True)
+                    # Clear transform-step dedup in RenderContext so the
+                    # next sensor read triggers update_transforms again.
+                    _sim_ctx = env.sim
+                    if hasattr(_sim_ctx, 'render_context'):
+                        _rc = _sim_ctx.render_context
+                        if hasattr(_rc, 'reset_transform_cadence'):
+                            _rc.reset_transform_cadence()
+                        if hasattr(_rc, '_last_transforms_step'):
+                            _rc._last_transforms_step = None
+                    # Reset annotator dedup and re-read all sensors.
+                    if _rtx_utils is not None:
+                        _rtx_utils._last_render_update_key = (0, -1)
+                    for _sensor in env.scene.sensors.values():
+                        _sensor.update(dt=0.0, force_recompute=True)
+                    obs = env.observation_manager.compute(update_history=True)
+                    env.obs_buf = obs
+                    # Save diagnostic image from the recomputed observation
+                    if _diag[0] < 1:
+                        try:
+                            import torch as _th
+                            _cam_obs = obs.get("camera_images", {})
+                            for _ck, _cv in _cam_obs.items():
+                                _img_t = _cv[0] if _cv.dim() == 4 else _cv
+                                _img_t = _img_t.detach().cpu()
+                                if hasattr(_img_t, "torch"):
+                                    _img_t = _img_t.torch
+                                _np_img = _img_t.numpy()
+                                import numpy as _np2
+                                if _np_img.max() <= 1.0 and _np_img.dtype in (_np2.float32, _np2.float16):
+                                    _np_img = (_np_img * 255).clip(0, 255).astype(_np2.uint8)
+                                _ppm_path = "/tmp/diag_reset_%s.ppm" % _ck
+                                _h, _w = _np_img.shape[:2]
+                                _c = _np_img.shape[2] if _np_img.ndim == 3 else 1
+                                with open(_ppm_path, "wb") as _pf:
+                                    _pf.write(("P6\n%d %d\n255\n" % (_w, _h)).encode())
+                                    if _c == 4:
+                                        _pf.write(_np_img[:,:,:3].tobytes())
+                                    elif _c == 3:
+                                        _pf.write(_np_img.tobytes())
+                                    else:
+                                        _pf.write(_np2.stack([_np_img]*3, axis=-1).tobytes())
+                                print("[DIAG] saved %s shape=%s" % (_ppm_path, list(_np_img.shape)), flush=True)
+                        except Exception as _save_e:
+                            print("[DIAG] image save failed: %s" % _save_e, flush=True)
+                    if _diag[0] < 1:
+                        _diag[0] += 1
+                        _robot = None
+                        _nj = -1
+                        for _a in env.scene.articulations.values():
+                            _jp = _a.data.joint_pos
+                            _jp = _jp.torch if hasattr(_jp, "torch") else _jp
+                            if _jp.shape[-1] > _nj:
+                                _nj = _jp.shape[-1]
+                                _robot = _a
+                        _jp = _robot.data.joint_pos
+                        _jp = _jp.torch if hasattr(_jp, "torch") else _jp
+                        _dj = _robot.data.default_joint_pos
+                        _dj = _dj.torch if hasattr(_dj, "torch") else _dj
+                        print("[DIAG] reset joint vs default max|diff|=%.6f" % (_jp[0] - _dj[0]).abs().max().item(), flush=True)
+                        for _nm, _sn in env.scene.sensors.items():
+                            _p = getattr(getattr(_sn, "data", None), "pos_w", None)
+                            if _p is not None:
+                                _p = _p.torch if hasattr(_p, "torch") else _p
+                                print("[DIAG] reset cam %s pos_w=%s" % (_nm, [round(float(x), 4) for x in _p[0].tolist()]), flush=True)
+                    return obs, extras
+
+                env.reset = _patched_reset
+
+                _step_diag = [0]
+                _original_step = env.step
+
+                def _patched_step(*args, **kwargs):
+                    out = _original_step(*args, **kwargs)
+                    if _step_diag[0] < 1:
+                        _step_diag[0] += 1
+                        for _nm, _sn in env.scene.sensors.items():
+                            _p = getattr(getattr(_sn, "data", None), "pos_w", None)
+                            if _p is not None:
+                                _p = _p.torch if hasattr(_p, "torch") else _p
+                                print("[DIAG] step1 cam %s pos_w=%s" % (_nm, [round(float(x), 4) for x in _p[0].tolist()]), flush=True)
+                    return out
+
+                env.step = _patched_step
+
                 return env, sim_app
 
             return make_env_isaaclab
@@ -522,6 +716,20 @@ def _create_generic_env_wrapper(task_id: str) -> type:
 
             policy_obs = obs.get("policy", obs)
             camera_obs = obs.get("camera_images", {})
+
+            # TEMP one-shot init-pose check (remove after verification)
+            global _pose_logged
+            if not _pose_logged:
+                _pose_logged = True
+                try:
+                    _rjs = policy_obs.get("robot_joint_state")
+                    _rds = policy_obs.get("robot_dex3_joint_state")
+                    if _rjs is not None:
+                        logger.warning("[INIT-POSE-CHECK] robot_joint_state[0]=%s", _rjs[0].detach().cpu().tolist())
+                    if _rds is not None:
+                        logger.warning("[INIT-POSE-CHECK] robot_dex3_joint_state[0]=%s", _rds[0].detach().cpu().tolist())
+                except Exception as _e:
+                    logger.warning("[INIT-POSE-CHECK] failed: %s", _e)
 
             cfg = _get_isaaclab_cfg()
             # Get task description from config

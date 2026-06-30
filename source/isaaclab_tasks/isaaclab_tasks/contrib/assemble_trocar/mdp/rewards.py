@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -19,6 +21,60 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Debug file logger
+# ---------------------------------------------------------------------------
+# Ray actors buffer stdout asynchronously and can drop late prints (we've
+# observed Observation/Termination/Reward/Curriculum Manager init lines and
+# our [STAGE-DBG]/[INIT-POSE-DBG]/[STAGE] messages silently disappearing in
+# eval runs that pipe through tee). To make these visible regardless of Ray
+# stdout forwarding, we write a copy of every debug line to a file on the
+# host mount so it survives across container/Ray process boundaries.
+#
+# File path is configurable via env var ASSEMBLE_TROCAR_DEBUG_LOG; defaults to
+# /host/assemble_trocar_debug.log (host is bind-mounted by run_n17.sh).
+_DEBUG_LOG_PATH = os.environ.get(
+    "ASSEMBLE_TROCAR_DEBUG_LOG",
+    "/host/assemble_trocar_debug.log",
+)
+_DEBUG_LOG_FH = None
+
+
+_DEBUG_LOG_DISABLED = False
+
+
+def _dbg(msg: str) -> None:
+    """Print to stdout AND append to the debug log file.
+
+    File writes are best-effort -- failures are silent so they never break
+    the RL loop. We keep the file open across calls to avoid open/close churn.
+    """
+    global _DEBUG_LOG_FH, _DEBUG_LOG_DISABLED
+    print(msg, flush=True)
+    if _DEBUG_LOG_DISABLED:
+        return
+    try:
+        if _DEBUG_LOG_FH is None:
+            try:
+                parent = os.path.dirname(_DEBUG_LOG_PATH)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+            except Exception:
+                pass
+            _DEBUG_LOG_FH = open(_DEBUG_LOG_PATH, "a", buffering=1)
+            _DEBUG_LOG_FH.write(
+                f"\n===== {os.path.basename(__file__)} debug log opened "
+                f"(pid={os.getpid()}) =====\n"
+            )
+        _DEBUG_LOG_FH.write(f"[pid={os.getpid()}] {msg}\n")
+    except Exception as exc:
+        try:
+            sys.stderr.write(f"[_dbg] disabled file logging: {exc!r}\n")
+        except Exception:
+            pass
+        _DEBUG_LOG_DISABLED = True
 
 __all__ = [
     "AssembleTrocarState",
@@ -206,11 +262,83 @@ def update_task_stage(
     both_in_zone = in_zone_1 & in_zone_2
     stage = torch.where((stage == 3) & both_in_zone, torch.full_like(stage, 4), stage)
 
+    if print_log and not getattr(state, "_update_stage_called", False):
+        _dbg(
+            f"[UPDATE-STAGE-CALLED] update_task_stage invoked for the first time "
+            f"(num_envs={env.num_envs}, target_z={target_z:.4f})"
+        )
+        state._update_stage_called = True
+
     # Print stage transitions (AFTER all stage transitions - always print when stage changes)
     if print_log and (stage != old_stage).any():
         for env_id in range(env.num_envs):
             if stage[env_id] != old_stage[env_id]:
-                logger.debug("Env %d: Stage %d → %d", env_id, old_stage[env_id].item(), stage[env_id].item())
+                _dbg(
+                    f"[STAGE] Env {env_id}: Stage {int(old_stage[env_id].item())} "
+                    f"-> {int(stage[env_id].item())}"
+                )
+
+    # Periodic debug dump of *why* stage 0 -> 1 isn't firing: shows the actual
+    # Z heights of both trocars vs the lift threshold (table_height + lift_threshold).
+    # We use print() (not logger.info) because the IsaacLab logging level filters
+    # debug/info from contrib modules out by default, and we need this visible
+    # in stdout to compare against the rendered eval videos.
+    if should_print_debug(env, print_interval=20, print_log=print_log):
+        # Only dump first 4 envs to keep file size sane on 32-env eval.
+        for env_id in range(min(env.num_envs, 4)):
+            _dbg(
+                f"[STAGE-DBG] env={env_id} step={int(env.episode_length_buf[env_id].item())} "
+                f"stage={int(stage[env_id].item())} | "
+                f"z1={pos1[env_id, 2].item():.4f} z2={pos2[env_id, 2].item():.4f} "
+                f"target={target_z:.4f} "
+                f"lifted1={bool(is_lifted_1[env_id].item())} "
+                f"lifted2={bool(is_lifted_2[env_id].item())} | "
+                f"tip_dist={tip_dist[env_id].item():.4f} "
+                f"center_dist={center_dist[env_id].item():.4f} "
+                f"angle={angle[env_id].item():.4f}"
+            )
+
+    # One-shot init-pose diagnostic: at very first call (step 0), dump the
+    # actual robot joint pos for shoulder/elbow/wrist joints next to the
+    # configured DEFAULT_JOINT_POS so we can see exactly which joints are
+    # offset from the configured init pose. Helps debug "first/second video
+    # frame doesn't match my configured pose" by quantifying the drift.
+    if print_log and not getattr(state, "_init_pose_dumped", False):
+        try:
+            robot = env.scene["robot"]
+            joint_names_full = robot.data.joint_names
+            joint_pos_now = robot.data.joint_pos.torch[0]  # env 0
+            # Joints we care about for "robot looks right" (arms only).
+            check = [
+                "left_shoulder_pitch_joint", "left_shoulder_roll_joint",
+                "left_shoulder_yaw_joint", "left_elbow_joint",
+                "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+                "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
+                "right_shoulder_yaw_joint", "right_elbow_joint",
+                "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+            ]
+            # Lazy-import DEFAULT_JOINT_POS to avoid circular imports at module load.
+            from isaaclab_tasks.contrib.assemble_trocar.config.robot_config import (
+                DEFAULT_JOINT_POS,
+            )
+            _dbg("[INIT-POSE-DBG] joint | configured | actual | diff")
+            for name in check:
+                if name not in joint_names_full:
+                    continue
+                idx = joint_names_full.index(name)
+                actual = float(joint_pos_now[idx].item())
+                configured = float(DEFAULT_JOINT_POS.get(name, 0.0))
+                diff = actual - configured
+                marker = "  <-- OFFSET" if abs(diff) > 0.02 else ""
+                _dbg(
+                    f"[INIT-POSE-DBG] {name:35s} | "
+                    f"cfg={configured:+.4f} | act={actual:+.4f} | "
+                    f"diff={diff:+.4f}{marker}"
+                )
+            state._init_pose_dumped = True
+        except Exception as exc:
+            _dbg(f"[INIT-POSE-DBG] failed: {exc!r}")
+            state._init_pose_dumped = True  # do not retry
 
     state.task_stage = stage
     return torch.zeros(env.num_envs, device=env.device)
